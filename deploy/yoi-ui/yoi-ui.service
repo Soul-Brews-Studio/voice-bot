@@ -1,0 +1,17 @@
+[Unit]
+Description=Yoi live UI (Mac voice-bot dashboard)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/yoi-ui
+EnvironmentFile=/root/yoi-ui/.env
+ExecStart=/usr/local/bin/bun run server.ts
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/yoi-ui.log
+StandardError=append:/var/log/yoi-ui.err.log
+
+[Install]
+WantedBy=multi-user.target

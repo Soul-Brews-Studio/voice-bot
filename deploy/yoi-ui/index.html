@@ -1,0 +1,576 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>🌀 Yoi live</title>
+  <style>
+    :root {
+      color-scheme: dark light;
+      --bg: #0f1115;
+      --panel: #181b22;
+      --panel-2: #1f232c;
+      --line: #2a2f3a;
+      --text: #e6e8ec;
+      --muted: #9aa3b2;
+      --accent: #d39bff;
+      --yoi: #ff9bd9;
+      --error: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans Thai", sans-serif; }
+    body { display: flex; flex-direction: column; }
+    header {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 16px; border-bottom: 1px solid var(--line);
+      background: var(--panel);
+      flex-wrap: wrap;
+    }
+    header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+    header .status { font-size: 12px; color: var(--muted); }
+    header .status .dot {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+      background: #555; margin-right: 4px; vertical-align: middle;
+    }
+    header .status.live .dot { background: #4caf50; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .tabs { display: flex; gap: 4px; margin-left: 8px; }
+    .tab {
+      background: transparent; color: var(--muted); border: 1px solid transparent;
+      padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;
+      position: relative;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { background: var(--panel-2); color: var(--text); border-color: var(--line); }
+    .tab .badge {
+      display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px;
+      font-size: 11px; background: var(--accent); color: #1a0033; font-weight: 600;
+    }
+    .tab .badge.hidden { display: none; }
+    .controls { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+    button {
+      background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+      padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    }
+    button:hover { background: #2a2f3a; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.primary { background: var(--accent); color: #1a0033; border-color: var(--accent); }
+    button.danger { background: var(--error); border-color: var(--error); }
+    main { flex: 1; overflow: hidden; position: relative; }
+    .panel { position: absolute; inset: 0; overflow-y: auto; padding: 16px; display: none; flex-direction: column; gap: 12px; }
+    .panel.active { display: flex; }
+    .event {
+      padding: 10px 14px; border-radius: 8px;
+      background: var(--panel); border-left: 3px solid var(--line);
+      max-width: 80%;
+    }
+    .event .meta { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+    .event .speaker { font-weight: 600; color: var(--accent); }
+    .event .text { font-size: 15px; line-height: 1.45; word-wrap: break-word; white-space: pre-wrap; }
+    .event.transcript { align-self: flex-start; border-left-color: var(--accent); }
+    .event.yoi { align-self: flex-end; border-left-color: var(--yoi); }
+    .event.yoi .speaker { color: var(--yoi); }
+    .event.note { align-self: stretch; background: rgba(255, 215, 0, 0.08); border-left-color: #ffd700; }
+    /* Background events panel — compact log lines */
+    .log-line {
+      font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px;
+      color: var(--muted); padding: 4px 0; border-bottom: 1px dotted var(--line);
+    }
+    .log-line.session { color: var(--text); }
+    .log-line.error { color: var(--error); }
+    .log-line .time { color: var(--muted); margin-right: 8px; }
+    .log-line .tag {
+      display: inline-block; padding: 1px 6px; margin-right: 8px; border-radius: 3px;
+      background: var(--panel); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .log-line.error .tag { background: var(--error); color: #fff; }
+    .empty {
+      margin: auto; color: var(--muted); font-size: 13px; text-align: center;
+    }
+    /* TTS toolbar — voice selector + text input + send buttons */
+    .tts-bar {
+      display: flex; gap: 8px; padding: 8px 16px;
+      background: var(--panel); border-bottom: 1px solid var(--line);
+      flex-wrap: wrap; align-items: center;
+    }
+    .tts-bar select, .tts-bar input[type=text] {
+      background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+      border-radius: 6px; padding: 7px 10px; font-size: 13px;
+      font-family: inherit;
+    }
+    .tts-bar select { min-width: 160px; cursor: pointer; }
+    .tts-bar input[type=text] { flex: 1; min-width: 220px; }
+    .tts-bar input[type=text]:focus, .tts-bar select:focus {
+      outline: none; border-color: var(--accent);
+    }
+    .tts-bar button { padding: 7px 14px; font-size: 13px; }
+    .tts-bar button.primary { background: var(--accent); color: #1a0033; border-color: var(--accent); }
+    .tts-bar button:disabled { opacity: 0.4; cursor: not-allowed; }
+    /* Sessions panel */
+    .sess-card {
+      background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+      border-radius: 8px; padding: 12px 14px; cursor: pointer;
+      display: flex; flex-direction: column; gap: 4px;
+      transition: background .15s;
+    }
+    .sess-card:hover { background: var(--panel-2); }
+    .sess-card .row1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .sess-card .ch { font-weight: 600; color: var(--accent); }
+    .sess-card .when { font-size: 12px; color: var(--muted); }
+    .sess-card .dur { font-size: 12px; color: var(--muted); margin-left: auto; }
+    .sess-card .preview { font-size: 13px; color: var(--text); opacity: .85; line-height: 1.4; }
+    .sess-card .parts { font-size: 11px; color: var(--muted); }
+    .sess-detail { display: flex; flex-direction: column; gap: 12px; }
+    .sess-detail .back {
+      background: transparent; color: var(--muted); border: none; cursor: pointer;
+      font-size: 13px; padding: 4px 0; align-self: flex-start;
+    }
+    .sess-detail .back:hover { color: var(--text); }
+    .sess-detail .head { padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+    .sess-detail .head h2 { margin: 0 0 6px 0; font-size: 17px; color: var(--accent); }
+    .sess-detail .head .sub { font-size: 12px; color: var(--muted); }
+    .sess-detail .block { padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+    .sess-detail .block h3 { margin: 0 0 8px 0; font-size: 14px; color: var(--text); }
+    .sess-detail .md { font-size: 14px; line-height: 1.55; white-space: pre-wrap; word-wrap: break-word; }
+    .sess-detail .md h2, .sess-detail .md h3 { margin: 12px 0 6px 0; color: var(--accent); font-size: 14px; }
+    .sess-detail .md ul, .sess-detail .md ol { margin: 4px 0 8px 22px; padding: 0; }
+    .sess-detail .md li { margin: 2px 0; }
+    .sess-detail .md strong { color: var(--text); }
+    .sess-detail .md em { color: var(--muted); }
+    .sess-detail .transcript-wrap details > summary {
+      cursor: pointer; color: var(--muted); padding: 4px 0; user-select: none;
+    }
+    .sess-detail .transcript-wrap details[open] > summary { color: var(--text); margin-bottom: 8px; }
+    .sess-detail .danger-row { display: flex; justify-content: flex-end; padding-top: 4px; }
+    .sess-detail .danger-row button { background: transparent; color: var(--error); border: 1px solid var(--line); }
+    .sess-detail .danger-row button:hover { background: rgba(255,107,107,.1); }
+    #flash { position: fixed; bottom: 16px; right: 16px; padding: 10px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; font-size: 13px; opacity: 0; transition: opacity .3s; z-index: 99; }
+    #flash.show { opacity: 1; }
+    /* Login */
+    .login {
+      margin: auto; padding: 24px; background: var(--panel);
+      border-radius: 12px; min-width: 280px; max-width: 320px;
+    }
+    .login h2 { margin-top: 0; font-size: 18px; }
+    .login input { width: 100%; padding: 10px; margin: 8px 0; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font-size: 14px; }
+    .login button { width: 100%; padding: 10px; margin-top: 8px; }
+    .login .err { color: var(--error); font-size: 12px; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <!--AUTH_SLOT-->
+  <script>
+    (function () {
+      const chatPanel = document.getElementById("chat-panel");
+      const eventsPanel = document.getElementById("events-panel");
+      const sessionsPanel = document.getElementById("sessions-panel");
+      if (!chatPanel || !eventsPanel) return; // login page
+
+      const status = document.getElementById("status");
+      const flash = document.getElementById("flash");
+      const badgeChat = document.getElementById("badge-chat");
+      const badgeEvents = document.getElementById("badge-events");
+      const tabChat = document.getElementById("tab-chat");
+      const tabEvents = document.getElementById("tab-events");
+      const tabSessions = document.getElementById("tab-sessions");
+
+      let activeTab = "chat";
+      const counts = { chat: 0, events: 0 };
+
+      function setActiveTab(name) {
+        activeTab = name;
+        for (const t of [tabChat, tabEvents, tabSessions]) t.classList.remove("active");
+        for (const p of [chatPanel, eventsPanel, sessionsPanel]) p.classList.remove("active");
+        if (name === "chat") { tabChat.classList.add("active"); chatPanel.classList.add("active"); }
+        else if (name === "events") { tabEvents.classList.add("active"); eventsPanel.classList.add("active"); }
+        else { tabSessions.classList.add("active"); sessionsPanel.classList.add("active"); loadSessionsList(); }
+        // Reset badge for newly-viewed tab
+        if (name in counts) counts[name] = 0;
+        renderBadges();
+      }
+      function renderBadges() {
+        const renderOne = (badge, n) => {
+          if (n > 0) { badge.textContent = n > 99 ? "99+" : n; badge.classList.remove("hidden"); }
+          else badge.classList.add("hidden");
+        };
+        renderOne(badgeChat, activeTab === "chat" ? 0 : counts.chat);
+        renderOne(badgeEvents, activeTab === "events" ? 0 : counts.events);
+      }
+
+      tabChat.addEventListener("click", () => setActiveTab("chat"));
+      tabEvents.addEventListener("click", () => setActiveTab("events"));
+      tabSessions.addEventListener("click", () => setActiveTab("sessions"));
+
+      function fmtTime(ts) {
+        const d = new Date(ts);
+        return `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}:${String(d.getSeconds()).padStart(2,"0")}`;
+      }
+      function showFlash(text) {
+        flash.textContent = text;
+        flash.classList.add("show");
+        setTimeout(() => flash.classList.remove("show"), 1800);
+      }
+
+      // Classify event → which panel it belongs to.
+      // CHAT: transcript, yoi-reply, note, trigger (conversational)
+      // EVENTS: session (join/leave/flush/auto-leave), error (background)
+      function panelFor(ev) {
+        if (ev.type === "session" || ev.type === "error") return "events";
+        return "chat";
+      }
+
+      // When a voice session ends (/yl, /yoi leave, auto-leave), wipe the
+      // Chat tab so the next session starts fresh. The conversation moves
+      // to the Sessions tab (after Mac voice-bot pushes the archive ~5-10s
+      // later). Banner gives a one-click jump.
+      function handleSessionEnd(ev) {
+        // Clear chat panel children except the placeholder we'll add below
+        chatPanel.innerHTML = "";
+        const banner = document.createElement("div");
+        banner.className = "event note";
+        banner.style.alignSelf = "center";
+        banner.style.maxWidth = "90%";
+        banner.style.textAlign = "center";
+        const ch = ev.channelName ? "#" + ev.channelName : "voice";
+        banner.innerHTML = "📚 Session ended (" + escapeHtml(ch) + ") — บันทึกไว้แล้วใน <a href='#' id='jump-sessions' style='color:var(--accent)'>Sessions tab</a> (รอ ~10s ให้สรุปเสร็จ)";
+        chatPanel.appendChild(banner);
+        const jump = document.getElementById("jump-sessions");
+        if (jump) jump.addEventListener("click", (e) => { e.preventDefault(); setActiveTab("sessions"); });
+      }
+
+      function appendChat(ev) {
+        const div = document.createElement("div");
+        const time = fmtTime(ev.ts);
+        if (ev.type === "transcript") {
+          div.className = "event transcript";
+          div.innerHTML = `<div class="meta"><span class="speaker"></span> · ${time}</div><div class="text"></div>`;
+          div.querySelector(".speaker").textContent = ev.speaker;
+          div.querySelector(".text").textContent = ev.text;
+        } else if (ev.type === "yoi-reply") {
+          div.className = "event yoi";
+          div.innerHTML = `<div class="meta"><span class="speaker">🌀 Yoi</span> · ${time}${ev.profile ? " · " + ev.profile : ""}</div><div class="text"></div>`;
+          div.querySelector(".text").textContent = ev.text;
+        } else if (ev.type === "note") {
+          div.className = "event note";
+          div.innerHTML = `<div class="meta">📝 note by ${ev.author} · ${time}</div><div class="text"></div>`;
+          div.querySelector(".text").textContent = ev.text;
+        } else if (ev.type === "trigger") {
+          div.className = "event transcript";
+          div.innerHTML = `<div class="meta">⚡ trigger from ${ev.speaker} · ${time}</div><div class="text"></div>`;
+          div.querySelector(".text").textContent = ev.triggerText;
+        } else return;
+        chatPanel.appendChild(div);
+        chatPanel.scrollTop = chatPanel.scrollHeight;
+      }
+
+      function appendEvent(ev) {
+        const div = document.createElement("div");
+        const time = fmtTime(ev.ts);
+        if (ev.type === "session") {
+          div.className = "log-line session";
+          const ch = ev.channelName ? `#${ev.channelName}` : "";
+          const reason = ev.reason ? ` — ${ev.reason}` : "";
+          div.innerHTML = `<span class="time">${time}</span><span class="tag">session</span>${ev.action} ${ch}${reason}`;
+        } else if (ev.type === "error") {
+          div.className = "log-line error";
+          div.innerHTML = `<span class="time">${time}</span><span class="tag">error</span>${ev.source}: ${ev.message}`;
+        } else {
+          div.className = "log-line";
+          div.innerHTML = `<span class="time">${time}</span>${JSON.stringify(ev)}`;
+        }
+        eventsPanel.appendChild(div);
+        eventsPanel.scrollTop = eventsPanel.scrollHeight;
+      }
+
+      function renderEvent(ev) {
+        const target = panelFor(ev);
+        if (target === "chat") appendChat(ev);
+        else appendEvent(ev);
+        if (target !== activeTab) {
+          counts[target] = (counts[target] || 0) + 1;
+          renderBadges();
+        }
+        // Side effect: leave event also wipes the chat tab.
+        if (ev.type === "session" && ev.action === "leave") {
+          handleSessionEnd(ev);
+          // If currently on Sessions tab, refresh the list (archive may arrive shortly)
+          if (activeTab === "sessions") setTimeout(loadSessionsList, 12_000);
+        }
+      }
+
+      // SSE
+      function connectSSE() {
+        const es = new EventSource("/feed");
+        es.onopen = () => { status.classList.add("live"); status.querySelector(".label").textContent = "live"; };
+        es.onerror = () => { status.classList.remove("live"); status.querySelector(".label").textContent = "reconnecting…"; };
+        es.onmessage = (e) => { try { renderEvent(JSON.parse(e.data)); } catch {} };
+      }
+      connectSSE();
+
+      // Initial empty-state placeholders
+      const emptyChat = document.createElement("div"); emptyChat.className = "empty"; emptyChat.textContent = "ยังไม่มีข้อความ — รอ voice transcript / Yoi reply / note ปรากฏที่นี่"; chatPanel.appendChild(emptyChat);
+      const emptyEvents = document.createElement("div"); emptyEvents.className = "empty"; emptyEvents.textContent = "ยังไม่มี background events"; eventsPanel.appendChild(emptyEvents);
+      // remove placeholders on first render of that type
+      const mo = new MutationObserver(() => {
+        if (chatPanel.children.length > 1 && chatPanel.contains(emptyChat)) emptyChat.remove();
+        if (eventsPanel.children.length > 1 && eventsPanel.contains(emptyEvents)) emptyEvents.remove();
+      });
+      mo.observe(chatPanel, { childList: true });
+      mo.observe(eventsPanel, { childList: true });
+
+      // Controls
+      document.querySelectorAll("[data-control]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const action = btn.dataset.control;
+          const arg = btn.dataset.arg;
+          btn.disabled = true;
+          try {
+            const res = await fetch("/api/control", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action, arg }),
+            });
+            const json = await res.json();
+            showFlash(json.message || (json.ok ? "ok" : "failed"));
+          } catch (e) {
+            showFlash("error: " + e.message);
+          } finally {
+            btn.disabled = false;
+          }
+        });
+      });
+
+      document.getElementById("logout")?.addEventListener("click", async () => {
+        await fetch("/logout", { method: "POST" });
+        location.href = "/";
+      });
+
+      // ─── Sessions tab ────────────────────────────────────────────────
+      // List view fetches /api/sessions on tab open + on Refresh; detail
+      // view fetches /api/sessions/:id when a card is clicked.
+      let sessionsLoaded = false;
+      function fmtDuration(ms) {
+        const total = Math.floor(ms / 1000);
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        if (h > 0) return h + "h " + m + "m";
+        if (m > 0) return m + "m";
+        return total + "s";
+      }
+      function fmtDateTime(ts) {
+        const d = new Date(ts);
+        const date = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+        const time = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+        return date + " " + time;
+      }
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => ({
+          "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+        }[c]));
+      }
+      // Tiny markdown renderer — headers, bullets, bold, italic, line breaks.
+      // Good enough for AI summaries and our transcript headers.
+      function renderMarkdown(md) {
+        if (!md) return "";
+        const lines = String(md).split("\n");
+        const out = [];
+        let inList = false;
+        const closeList = () => { if (inList) { out.push("</ul>"); inList = false; } };
+        for (const raw of lines) {
+          const line = raw.trimEnd();
+          if (/^###?\s+/.test(line)) {
+            closeList();
+            const level = line.startsWith("###") ? 3 : 2;
+            out.push("<h" + level + ">" + escapeHtml(line.replace(/^#+\s+/, "")) + "</h" + level + ">");
+            continue;
+          }
+          if (/^[-*]\s+/.test(line)) {
+            if (!inList) { out.push("<ul>"); inList = true; }
+            let item = escapeHtml(line.replace(/^[-*]\s+/, ""));
+            item = item.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+                       .replace(/\b_(.+?)_\b/g, "<em>$1</em>");
+            out.push("<li>" + item + "</li>");
+            continue;
+          }
+          if (line === "") { closeList(); out.push(""); continue; }
+          if (/^---+$/.test(line)) { closeList(); out.push("<hr/>"); continue; }
+          if (/^>\s?/.test(line)) {
+            closeList();
+            out.push("<div style='color:var(--muted);font-size:13px'>" + escapeHtml(line.replace(/^>\s?/, "")) + "</div>");
+            continue;
+          }
+          closeList();
+          let html = escapeHtml(line);
+          html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+                     .replace(/\b_(.+?)_\b/g, "<em>$1</em>");
+          out.push(html);
+        }
+        closeList();
+        return out.join("\n");
+      }
+
+      async function loadSessionsList() {
+        sessionsLoaded = true;
+        sessionsPanel.innerHTML = "<div class='empty'>กำลังโหลด…</div>";
+        try {
+          const res = await fetch("/api/sessions?limit=200");
+          const json = await res.json();
+          if (!json.ok) throw new Error(json.message || "load failed");
+          const items = json.sessions || [];
+          if (items.length === 0) {
+            sessionsPanel.innerHTML = "<div class='empty'>ยังไม่มี session — จะปรากฏที่นี่ทุกครั้งที่หยอย leave จาก voice channel</div>";
+            return;
+          }
+          sessionsPanel.innerHTML = "";
+          const refresh = document.createElement("button");
+          refresh.textContent = "↻ Refresh";
+          refresh.style.alignSelf = "flex-start";
+          refresh.style.marginBottom = "4px";
+          refresh.addEventListener("click", loadSessionsList);
+          sessionsPanel.appendChild(refresh);
+          for (const s of items) {
+            const card = document.createElement("div");
+            card.className = "sess-card";
+            card.innerHTML =
+              "<div class='row1'>" +
+                "<span class='ch'>#" + escapeHtml(s.channelName) + "</span>" +
+                "<span class='when'>" + fmtDateTime(s.joinedAt) + "</span>" +
+                "<span class='dur'>" + fmtDuration(s.durationMs) + " · " + s.segmentCount + " seg</span>" +
+              "</div>" +
+              (s.summaryPreview ? "<div class='preview'>" + escapeHtml(s.summaryPreview) + "</div>" : "") +
+              (s.participants && s.participants.length ? "<div class='parts'>👥 " + s.participants.map(escapeHtml).join(", ") + "</div>" : "");
+            card.addEventListener("click", () => loadSessionDetail(s.id));
+            sessionsPanel.appendChild(card);
+          }
+        } catch (e) {
+          sessionsPanel.innerHTML = "<div class='empty'>โหลดไม่สำเร็จ: " + escapeHtml(e.message || String(e)) + "</div>";
+        }
+      }
+
+      async function loadSessionDetail(id) {
+        sessionsPanel.innerHTML = "<div class='empty'>กำลังโหลด…</div>";
+        try {
+          const res = await fetch("/api/sessions/" + encodeURIComponent(id));
+          const json = await res.json();
+          if (!json.ok) throw new Error(json.message || "not found");
+          const s = json.session;
+          const detail = document.createElement("div");
+          detail.className = "sess-detail";
+
+          const back = document.createElement("button");
+          back.className = "back";
+          back.textContent = "← Back to sessions";
+          back.addEventListener("click", loadSessionsList);
+          detail.appendChild(back);
+
+          const head = document.createElement("div");
+          head.className = "head";
+          head.innerHTML =
+            "<h2>#" + escapeHtml(s.channelName) + "</h2>" +
+            "<div class='sub'>" + fmtDateTime(s.joinedAt) + " → " + fmtDateTime(s.leftAt) +
+            " · " + fmtDuration(s.durationMs) + " · " + s.segmentCount + " segments" +
+            (s.participants && s.participants.length ? " · 👥 " + s.participants.map(escapeHtml).join(", ") : "") +
+            "</div>";
+          detail.appendChild(head);
+
+          const summary = document.createElement("div");
+          summary.className = "block";
+          summary.innerHTML = "<h3>📝 Summary</h3>" +
+            (s.summary ? "<div class='md'>" + renderMarkdown(s.summary) + "</div>"
+                       : "<div class='md' style='color:var(--muted)'>(ไม่มี summary — อาจไม่มี GEMINI_API_KEY ตอน generate)</div>");
+          detail.appendChild(summary);
+
+          const trans = document.createElement("div");
+          trans.className = "block transcript-wrap";
+          trans.innerHTML = "<details><summary>📜 Full transcript (" + (s.transcriptMd ? s.transcriptMd.length : 0) + " chars)</summary>" +
+            "<div class='md' style='margin-top:8px'>" + renderMarkdown(s.transcriptMd || "") + "</div>" +
+            "</details>";
+          detail.appendChild(trans);
+
+          const danger = document.createElement("div");
+          danger.className = "danger-row";
+          const del = document.createElement("button");
+          del.textContent = "🗑 ลบ session นี้";
+          del.addEventListener("click", async () => {
+            if (!confirm("ลบ session นี้ถาวร? ลบแล้วกู้ไม่ได้")) return;
+            const r = await fetch("/api/sessions/" + encodeURIComponent(id), { method: "DELETE" });
+            if (r.ok) { showFlash("ลบแล้วค่ะ"); loadSessionsList(); }
+            else showFlash("ลบไม่สำเร็จ");
+          });
+          danger.appendChild(del);
+          detail.appendChild(danger);
+
+          sessionsPanel.innerHTML = "";
+          sessionsPanel.appendChild(detail);
+        } catch (e) {
+          sessionsPanel.innerHTML = "<div class='empty'>โหลดไม่สำเร็จ: " + escapeHtml(e.message || String(e)) + "</div>";
+        }
+      }
+
+      // ─── TTS toolbar ─────────────────────────────────────────────────
+      // Voice profile selector (kanya/leda/…) → sends `voice` action.
+      // Text input + Say button → sends `say` action (literal TTS).
+      // Think button → sends `think` action (Claude processes → speaks reply).
+      // Selected voice persists in localStorage so it survives reloads.
+      const ttsVoice = document.getElementById("tts-voice");
+      const ttsText = document.getElementById("tts-text");
+      const ttsSay = document.getElementById("tts-say");
+      const ttsThink = document.getElementById("tts-think");
+
+      const SAVED_VOICE_KEY = "yoi.tts.voice";
+      const savedVoice = (() => { try { return localStorage.getItem(SAVED_VOICE_KEY); } catch { return null; } })();
+      if (savedVoice && [...ttsVoice.options].some(o => o.value === savedVoice)) {
+        ttsVoice.value = savedVoice;
+      }
+
+      async function sendCtl(action, arg) {
+        const res = await fetch("/api/control", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, arg }),
+        });
+        return res.json();
+      }
+
+      ttsVoice.addEventListener("change", async () => {
+        const profile = ttsVoice.value;
+        try { localStorage.setItem(SAVED_VOICE_KEY, profile); } catch {}
+        try {
+          const j = await sendCtl("voice", profile);
+          showFlash(j.message || `🎙 voice → ${profile}`);
+        } catch (e) {
+          showFlash("error: " + e.message);
+        }
+      });
+
+      async function sendTts(action) {
+        const text = ttsText.value.trim();
+        if (!text) { showFlash("พิมพ์ข้อความก่อนค่ะ"); ttsText.focus(); return; }
+        const btn = action === "say" ? ttsSay : ttsThink;
+        btn.disabled = true;
+        try {
+          const j = await sendCtl(action, text);
+          showFlash(j.message || `🌀 queued ${action}`);
+          ttsText.value = "";
+        } catch (e) {
+          showFlash("error: " + e.message);
+        } finally {
+          btn.disabled = false;
+          ttsText.focus();
+        }
+      }
+      ttsSay.addEventListener("click", () => sendTts("say"));
+      ttsThink.addEventListener("click", () => sendTts("think"));
+      ttsText.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          sendTts(e.ctrlKey || e.metaKey ? "think" : "say");
+        }
+      });
+
+      // Start on chat
+      setActiveTab("chat");
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+node_modules/
+.env
+*.wav
+*.mp3
+*.pcm
+voice-tmp/
+transcripts/
+.claude/
+dist/
+.DS_Store
