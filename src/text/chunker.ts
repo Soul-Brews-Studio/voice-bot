@@ -1,27 +1,73 @@
 const DISCORD_MESSAGE_LIMIT = 2_000;
 
-export function chunkDiscordMessage(
+export function splitMessage(
   text: string,
-  limit = DISCORD_MESSAGE_LIMIT,
+  maxLength = DISCORD_MESSAGE_LIMIT,
 ): string[] {
-  if (limit <= 0) throw new Error("chunk limit must be positive");
-  const chunks: string[] = [];
-  let remaining = text;
+  if (maxLength <= 0) throw new Error("maxLength must be positive");
 
-  while (remaining.length > limit) {
-    const splitAt = findSplitPoint(remaining, limit);
-    chunks.push(remaining.slice(0, splitAt).trimEnd());
-    remaining = remaining.slice(splitAt).trimStart();
+  const chunks: string[] = [];
+  let current = "";
+
+  for (const line of text.split("\n")) {
+    const candidate = current ? `${current}\n${line}` : line;
+    if (candidate.length <= maxLength) {
+      current = candidate;
+      continue;
+    }
+
+    if (current) {
+      chunks.push(current);
+      current = "";
+    }
+
+    for (const wordChunk of splitLine(line, maxLength)) {
+      if (wordChunk.length <= maxLength && !current) {
+        current = wordChunk;
+      } else if (`${current} ${wordChunk}`.trim().length <= maxLength) {
+        current = `${current} ${wordChunk}`.trim();
+      } else {
+        if (current) chunks.push(current);
+        current = wordChunk;
+      }
+    }
   }
 
-  if (remaining.length > 0) chunks.push(remaining);
+  if (current) chunks.push(current);
+  return chunks.filter((chunk) => chunk.length > 0);
+}
+
+function splitLine(line: string, maxLength: number): string[] {
+  const chunks: string[] = [];
+  let current = "";
+
+  for (const word of line.split(/\s+/).filter(Boolean)) {
+    if (word.length > maxLength) {
+      if (current) {
+        chunks.push(current);
+        current = "";
+      }
+      chunks.push(word.slice(0, maxLength));
+      let rest = word.slice(maxLength);
+      while (rest.length > maxLength) {
+        chunks.push(rest.slice(0, maxLength));
+        rest = rest.slice(maxLength);
+      }
+      current = rest;
+      continue;
+    }
+
+    const candidate = current ? `${current} ${word}` : word;
+    if (candidate.length <= maxLength) {
+      current = candidate;
+    } else {
+      if (current) chunks.push(current);
+      current = word;
+    }
+  }
+
+  if (current || line === "") chunks.push(current);
   return chunks;
 }
 
-function findSplitPoint(text: string, limit: number): number {
-  const newline = text.lastIndexOf("\n", limit);
-  if (newline > limit * 0.5) return newline + 1;
-  const space = text.lastIndexOf(" ", limit);
-  if (space > limit * 0.5) return space + 1;
-  return limit;
-}
+export const chunkDiscordMessage = splitMessage;

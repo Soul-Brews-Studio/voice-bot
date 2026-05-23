@@ -72,9 +72,11 @@ function parseConfig(): BotConfig {
   if (resolved.backend === "edge") {
     process.env.TTS_VOICE = resolved.voice;
   }
+  const botName = process.env.BOT_NAME ?? process.env.VOICE_BOT_NAME ?? "codey";
+  process.env.BOT_NAME = botName;
 
   return {
-    botName: process.env.BOT_NAME ?? process.env.VOICE_BOT_NAME ?? "codey",
+    botName,
     token,
     voiceProfile,
     serverUrl: process.env.MAW_DISCORD_SERVER_URL ?? DEFAULT_SERVER_URL,

@@ -10,7 +10,7 @@ import {
 } from "discord.js";
 import "sodium-native";
 import type { ClaudeBridge } from "./claude-bridge.ts";
-import { handleMentionMessage } from "../text/message-handler.ts";
+import { handleMessage } from "../text/message-handler.ts";
 
 export interface DiscordClientHandlers {
   bridge?: ClaudeBridge;
@@ -26,6 +26,7 @@ export function createDiscordClient(options: Partial<ClientOptions> = {}): Clien
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.GuildMembers,
       GatewayIntentBits.MessageContent,
+      GatewayIntentBits.DirectMessages,
     ],
     partials: [Partials.Channel, Partials.Message, Partials.GuildMember],
     ...options,
@@ -44,24 +45,19 @@ export function installDiscordEventHandlers(
 
   discordClient.on(Events.MessageCreate, async (message: Message) => {
     if (!handlers.bridge) return;
-    if (!isMentionForClient(message, discordClient)) return;
     try {
-      await handleMentionMessage(message, handlers.bridge);
+      await handleMessage(message, {
+        bridge: handlers.bridge,
+        client: discordClient,
+      });
     } catch (error: any) {
-      console.warn(`[discord-client] mention handling failed: ${error?.message ?? error}`);
+      console.warn(`[discord-client] message handling failed: ${error?.message ?? error}`);
     }
   });
 
   discordClient.on(Events.InteractionCreate, async (interaction: Interaction) => {
     await handlers.onInteraction?.(interaction);
   });
-}
-
-function isMentionForClient(message: Message, discordClient: Client): boolean {
-  if (message.author.bot) return false;
-  const selfId = discordClient.user?.id;
-  if (!selfId) return false;
-  return message.mentions.users.has(selfId);
 }
 
 export type { ChatInputCommandInteraction };
