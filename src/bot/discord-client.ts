@@ -19,6 +19,7 @@ export interface DiscordClientHandlers {
 }
 
 export function createDiscordClient(options: Partial<ClientOptions> = {}): Client {
+  console.log("[discord-client] creating client with GuildVoiceStates intent enabled");
   return new Client({
     intents: [
       GatewayIntentBits.Guilds,

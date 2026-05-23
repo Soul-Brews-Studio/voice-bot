@@ -142,12 +142,16 @@ export function startSpeakerCapture(
   mkdirSync(TMP_DIR, { recursive: true });
 
   const receiver = connection.receiver;
+  console.log(
+    `[audio] subscribe start user=${userId} guild=${config.guildId ?? "unknown"} silence=${config.silenceThresholdMs}ms`,
+  );
   const opusStream = receiver.subscribe(userId, {
     end: {
       behavior: EndBehaviorType.AfterSilence,
       duration: config.silenceThresholdMs,
     },
   });
+  console.log(`[audio] opus stream subscribed user=${userId}`);
 
   const pcmDecoder = new prism.opus.Decoder({
     rate: PCM_RATE,
@@ -161,6 +165,8 @@ export function startSpeakerCapture(
   let flushSeq = 0;
   let flushing = false;
   let ended = false;
+  let opusFrames = 0;
+  let pcmFrames = 0;
 
   const flushIntervalMs = config.chunkFlushMs ?? 8_000;
   const minFinalChunkMs = config.minFinalChunkMs ?? 1_500;
@@ -201,6 +207,9 @@ export function startSpeakerCapture(
         byteSize: pcm.length,
         isPartial,
       };
+      console.log(
+        `[audio] chunk produced user=${userId} seq=${flushSeq} partial=${Boolean(isPartial)} dur=${durationMs}ms bytes=${pcm.length} wav=${wavPath}`,
+      );
       await onChunk(chunk);
     } catch (e: any) {
       console.warn(
@@ -217,7 +226,26 @@ export function startSpeakerCapture(
     void dispatchBuffer(true);
   }, flushIntervalMs);
 
+  opusStream.on("data", (chunk: Buffer) => {
+    opusFrames++;
+    if (opusFrames === 1) {
+      console.log(`[audio] opus first frame user=${userId} bytes=${chunk.length}`);
+    }
+  });
+
+  opusStream.on("end", () => {
+    console.log(`[audio] opus end user=${userId} frames=${opusFrames}`);
+  });
+
+  opusStream.on("error", (e: Error) => {
+    console.warn(`[audio] opus error user=${userId}:`, e.message);
+  });
+
   pcmStream.on("data", (chunk: Buffer) => {
+    pcmFrames++;
+    if (pcmFrames === 1) {
+      console.log(`[audio] pcm first frame user=${userId} bytes=${chunk.length}`);
+    }
     buffers.push(chunk);
     if (SAVE_RAW_AUDIO && config.guildId) {
       getRawRecorder(config.guildId).append(chunk);
@@ -227,6 +255,9 @@ export function startSpeakerCapture(
   pcmStream.on("end", async () => {
     ended = true;
     clearInterval(flushTimer);
+    console.log(
+      `[audio] pcm end user=${userId} pcmFrames=${pcmFrames} buffered=${buffers.length}`,
+    );
     // Wait for any in-flight flush, then dispatch final
     while (flushing) {
       await new Promise((r) => setTimeout(r, 50));

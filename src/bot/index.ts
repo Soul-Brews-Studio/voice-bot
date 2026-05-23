@@ -234,7 +234,13 @@ async function joinVoice(runtime: BotRuntime, command: BotCommand): Promise<Chan
     guild: channel.guild,
     selfMute: true,
     onChunk: async (chunk) => {
+      console.log(
+        `[bot] audio chunk for STT user=${chunk.userId} dur=${chunk.durationMs}ms bytes=${chunk.byteSize} wav=${chunk.wavPath}`,
+      );
       const result = await transcribeAndCleanup(chunk.wavPath);
+      console.log(
+        `[bot] STT result user=${chunk.userId} chars=${result.text.length} lang=${result.language ?? "unknown"}`,
+      );
       await session!.addSegment({
         speakerId: chunk.userId,
         startedAt: chunk.startedAt,

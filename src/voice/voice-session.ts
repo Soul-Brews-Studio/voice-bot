@@ -151,6 +151,9 @@ export class VoiceSession {
 
     await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
     this._state = "recording";
+    console.log(
+      `[voice-session] connected guild=${args.guildId} channel=${args.channelId} selfDeaf=false selfMute=${args.selfMute ?? true}`,
+    );
     this.startRecording(args);
     this.startAutoFlush(args.autoFlushMs);
   }
@@ -250,7 +253,14 @@ export class VoiceSession {
     const connection = this._connection;
     if (!connection) return;
 
+    console.log(
+      `[voice-session] startRecording guild=${args.guildId} channel=${args.channelId} receiver=${Boolean(connection.receiver)}`,
+    );
+
     connection.receiver.speaking.on("start", (userId: string) => {
+      console.log(
+        `[voice-session] speaking start guild=${args.guildId} channel=${args.channelId} user=${userId}`,
+      );
       if (this._activeSpeakers.has(userId)) return;
       this._activeSpeakers.add(userId);
 
