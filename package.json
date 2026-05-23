@@ -4,8 +4,8 @@
   "type": "module",
   "description": "Discord voice channel transcriber + AI secretary — real-time STT, AI replies, transcript export.",
   "scripts": {
-    "start": "bun src/bot/index.ts",
-    "dev": "bun --watch src/bot/index.ts",
+    "start": "bun src/index.ts",
+    "dev": "bun --watch src/index.ts",
     "typecheck": "tsc --noEmit",
     "postinstall": "bash scripts/fix-opus-abi.sh || true",
     "fix-opus": "bash scripts/fix-opus-abi.sh"
