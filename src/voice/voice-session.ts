@@ -47,6 +47,14 @@ export interface VoiceSessionCallbacks {
   onTrigger?: (text: string, userId: string) => Promise<void> | void;
 }
 
+export interface AddSegmentArgs {
+  speakerId: string;
+  startedAt: number;
+  endedAt: number;
+  text: string;
+  language?: string;
+}
+
 export interface ConnectArgs {
   channelId: string;
   guildId: string;
@@ -214,6 +222,30 @@ export class VoiceSession {
     void this._callbacks.onTranscript?.(segment);
   }
 
+  async addSegment(args: AddSegmentArgs): Promise<TranscriptSegment | null> {
+    const text = args.text.trim();
+    if (!text) return null;
+
+    const speaker = await this.resolveSpeakerName(args.speakerId);
+    this._participants.set(args.speakerId, speaker);
+    const segment: TranscriptSegment = {
+      speaker,
+      speakerId: args.speakerId,
+      startedAt: args.startedAt,
+      endedAt: args.endedAt,
+      text,
+      language: args.language,
+    };
+    this._segments.push(segment);
+    await this._callbacks.onTranscript?.(segment);
+
+    if (detectTrigger(text)) {
+      this._triggerDebouncer.push(args.speakerId, text);
+    }
+
+    return segment;
+  }
+
   private startRecording(args: ConnectArgs): void {
     const connection = this._connection;
     if (!connection) return;
@@ -249,24 +281,13 @@ export class VoiceSession {
 
   private async defaultChunkHandler(chunk: AudioChunk): Promise<void> {
     const result = await transcribeAndCleanup(chunk.wavPath);
-    if (!result.text) return;
-
-    const speaker = await this.resolveSpeakerName(chunk.userId);
-    this._participants.set(chunk.userId, speaker);
-    const segment: TranscriptSegment = {
-      speaker,
+    await this.addSegment({
       speakerId: chunk.userId,
       startedAt: chunk.startedAt,
       endedAt: chunk.endedAt,
       text: result.text,
       language: result.language,
-    };
-    this._segments.push(segment);
-    await this._callbacks.onTranscript?.(segment);
-
-    if (detectTrigger(result.text)) {
-      this._triggerDebouncer.push(chunk.userId, result.text);
-    }
+    });
   }
 
   private async resolveSpeakerName(userId: string): Promise<string> {

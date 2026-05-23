@@ -15,6 +15,7 @@ import {
   type FollowRef,
   type HeartbeatPayload,
 } from "./register.ts";
+import { transcribeAndCleanup } from "../stt/index.ts";
 import { setDiscordToolContext } from "../tools/context.ts";
 import { playTextInSession } from "../tools/voice-say.ts";
 import { isSpeakMode, setMute as setVoiceMute } from "../voice/speak-state.ts";
@@ -232,6 +233,16 @@ async function joinVoice(runtime: BotRuntime, command: BotCommand): Promise<Chan
     adapterCreator: channel.guild.voiceAdapterCreator,
     guild: channel.guild,
     selfMute: true,
+    onChunk: async (chunk) => {
+      const result = await transcribeAndCleanup(chunk.wavPath);
+      await session!.addSegment({
+        speakerId: chunk.userId,
+        startedAt: chunk.startedAt,
+        endedAt: chunk.endedAt,
+        text: result.text,
+        language: result.language,
+      });
+    },
     onTranscript: async () => {
       await session!.flush();
     },
