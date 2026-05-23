@@ -13,6 +13,7 @@ import {
   stopHeartbeat,
   type ChannelRef,
   type FollowRef,
+  type HeartbeatPayload,
 } from "./register.ts";
 import { setDiscordToolContext } from "../tools/context.ts";
 import { playTextInSession } from "../tools/voice-say.ts";
@@ -56,6 +57,8 @@ interface BotRuntime {
   client: Client;
   bridge: ClaudeBridge;
   commandServer: ReturnType<typeof Bun.serve>;
+  commandUrl?: string;
+  guildIds: string[];
   sessions: Map<string, VoiceSession>;
   followTarget: FollowRef | null;
   shuttingDown: boolean;
@@ -96,6 +99,8 @@ export async function startBotProcess(
     client,
     bridge,
     commandServer: undefined as never,
+    commandUrl: undefined,
+    guildIds: [],
     sessions,
     followTarget: null,
     shuttingDown: false,
@@ -112,26 +117,22 @@ export async function startBotProcess(
 
   runtime.commandServer = startCommandServer(runtime);
   const commandUrl = runtime.commandServer.url.toString().replace(/\/$/, "");
+  runtime.commandUrl = commandUrl;
 
   installDiscordEventHandlers(client, {
     bridge,
     onReady: async (readyClient) => {
       const guildIds = readyClient.guilds.cache.map((guild) => guild.id);
+      runtime.guildIds = guildIds;
       await register(config.serverUrl, config.botName, guildIds, commandUrl).catch((error) => {
         console.warn(`[bot] register failed: ${error.message}`);
       });
-      startHeartbeat(config.serverUrl, config.botName, config.heartbeatMs, () => ({
-        guildIds,
-        commandUrl,
-        currentChannel: getCurrentChannel(runtime),
-        followTarget: runtime.followTarget,
-      }));
+      startHeartbeat(config.serverUrl, config.botName, config.heartbeatMs, () =>
+        getHeartbeatSnapshot(runtime),
+      );
       await heartbeat(config.serverUrl, {
         botName: config.botName,
-        guildIds,
-        commandUrl,
-        currentChannel: getCurrentChannel(runtime),
-        followTarget: runtime.followTarget,
+        ...getHeartbeatSnapshot(runtime),
       }).catch((error) => {
         console.warn(`[bot] initial heartbeat failed: ${error.message}`);
       });
@@ -197,9 +198,11 @@ async function dispatchCommand(
         guildId: command.guildId,
         targetUserId: command.targetUserId,
       };
+      await sendImmediateHeartbeat(runtime, "follow");
       return { followTarget: runtime.followTarget };
     case "unfollow":
       runtime.followTarget = null;
+      await sendImmediateHeartbeat(runtime, "unfollow");
       return { followTarget: null };
     default:
       throw new Error(`unsupported command: ${(command as BotCommand).action}`);
@@ -238,7 +241,9 @@ async function joinVoice(runtime: BotRuntime, command: BotCommand): Promise<Chan
     },
   });
 
-  return { id: channel.id, name: channel.name, guildId };
+  const currentChannel = { id: channel.id, name: channel.name, guildId };
+  await sendImmediateHeartbeat(runtime, "join");
+  return currentChannel;
 }
 
 async function leaveVoice(
@@ -246,17 +251,30 @@ async function leaveVoice(
   guildId?: string,
 ): Promise<{ transcriptPath: string | null }> {
   const session = resolveSession(runtime, guildId);
-  if (!session) return { transcriptPath: null };
+  if (!session) {
+    runtime.followTarget = null;
+    await sendImmediateHeartbeat(runtime, "leave");
+    return { transcriptPath: null };
+  }
+  const sessionGuildId = session.guildId ?? guildId;
   const transcriptPath = await session.leave();
-  if (session.guildId) runtime.sessions.delete(session.guildId);
+  if (sessionGuildId) {
+    runtime.sessions.delete(sessionGuildId);
+  } else {
+    for (const [key, value] of runtime.sessions.entries()) {
+      if (value === session) runtime.sessions.delete(key);
+    }
+  }
+  runtime.followTarget = null;
+  await sendImmediateHeartbeat(runtime, "leave");
   return { transcriptPath };
 }
 
-function applyMute(
+async function applyMute(
   runtime: BotRuntime,
   guildId: string | undefined,
   mute: boolean,
-): { muted: boolean } {
+): Promise<{ muted: boolean }> {
   const session = resolveSession(runtime, guildId);
   if (!session?.guildId || !session.channelId) {
     throw new Error("no active voice session");
@@ -267,6 +285,7 @@ function applyMute(
     selfDeaf: false,
     selfMute: mute,
   });
+  await sendImmediateHeartbeat(runtime, mute ? "mute" : "unmute");
   return { muted: mute };
 }
 
@@ -315,6 +334,31 @@ function getCurrentChannel(runtime: BotRuntime): ChannelRef | null {
     name: active.channelName,
     guildId: active.guildId,
   };
+}
+
+function getHeartbeatSnapshot(runtime: BotRuntime): Omit<HeartbeatPayload, "botName"> {
+  const guildIds =
+    runtime.guildIds.length > 0
+      ? runtime.guildIds
+      : runtime.client.guilds.cache.map((guild) => guild.id);
+  return {
+    guildIds,
+    commandUrl: runtime.commandUrl,
+    currentChannel: getCurrentChannel(runtime),
+    followTarget: runtime.followTarget,
+  };
+}
+
+async function sendImmediateHeartbeat(
+  runtime: BotRuntime,
+  reason: string,
+): Promise<void> {
+  await heartbeat(runtime.config.serverUrl, {
+    botName: runtime.config.botName,
+    ...getHeartbeatSnapshot(runtime),
+  }).catch((error) => {
+    console.warn(`[bot] ${reason} heartbeat failed: ${error.message}`);
+  });
 }
 
 function isVoiceChannel(channel: unknown): channel is VoiceBasedChannel {
