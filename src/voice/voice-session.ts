@@ -61,6 +61,7 @@ export interface ConnectArgs {
   minFinalChunkMs?: number;
   chunkFlushMs?: number;
   autoFlushMs?: number;
+  selfMute?: boolean;
 }
 
 export class VoiceSession {
@@ -136,7 +137,7 @@ export class VoiceSession {
       guildId: args.guildId,
       adapterCreator: args.adapterCreator,
       selfDeaf: false,
-      selfMute: false,
+      selfMute: args.selfMute ?? true,
     });
     this._connection = connection;
 

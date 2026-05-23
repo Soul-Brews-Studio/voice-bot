@@ -222,6 +222,7 @@ async function joinVoice(runtime: BotRuntime, command: BotCommand): Promise<Chan
     await session.leave({ saveTranscript: false });
   }
 
+  setVoiceMute(guildId, true);
   session = new VoiceSession();
   runtime.sessions.set(guildId, session);
   await session.connect({
@@ -230,6 +231,7 @@ async function joinVoice(runtime: BotRuntime, command: BotCommand): Promise<Chan
     channelName: channel.name,
     adapterCreator: channel.guild.voiceAdapterCreator,
     guild: channel.guild,
+    selfMute: true,
     onTranscript: async () => {
       await session!.flush();
     },
