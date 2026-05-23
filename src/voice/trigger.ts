@@ -1,38 +1,15 @@
-const BUILTIN_TRIGGERS = [
-  "โคดี้",
-  "น้องโคดี้",
-  "โคดี้จ๋า",
-  "โคดี้จ้า",
-  "ขอดี",
-  "โค้ดดี้",
-  "โค้ดี้",
-  "โคดี",
-  "โค๊ดดี้",
-  "โอดี",
-  "โคลดี้",
-  "คอลดี้",
-  "โหดี",
-  "พอดี้",
-  "คอดี้",
-  "ย้อย",
-  "หย่อย",
-  "ยอย",
-  "ย่อย",
-  "หยอด",
-  "codey",
-  "cody",
-  "codie",
+const UNIVERSAL_TRIGGERS = [
   "ตอบหน่อย",
-  "ช่วยตอบ",
-  "ตอบที",
-  "ตอบสิ",
-  "ตอบให้หน่อย",
-  "ว่าไง",
-  "เอาไง",
 ];
 
+const BOT_NAME_ALIASES: Record<string, string[]> = {
+  codey: ["codey", "cody", "codie", "โคดี้", "โค้ดี้", "โคดี"],
+  due: ["due", "ดูเอ"],
+  uno: ["uno", "อูโน่", "อูโน"],
+};
+
 const FUZZY_TRIGGER_RE =
-  /(?:ตอบ\s*(?:ห[่้]?น[่้]?[อ้า]?[ยา]?|นอย|หนอย|หน้า)|ช่วย\s*(?:ตอบ|ฟัง|บอก)|ต[่ิ]?[ดอ]?[ไป่]?ปแล้ว|ติดต่อไปแล้ว|อับน้?อย|อบน้?อย)/i;
+  /(?:ตอบ\s*(?:ห[่้]?น[่้]?[อ้า]?[ยา]?|นอย|หนอย|หน้า))/i;
 
 export interface PendingTrigger {
   userId: string;
@@ -41,10 +18,48 @@ export interface PendingTrigger {
 
 export type TriggerHandler = (trigger: PendingTrigger) => void | Promise<void>;
 
-function loadExtraTriggers(): string[] {
-  const raw = process.env.TRIGGER_EXTRA_PHRASES;
+function loadEnvPhrases(name: string): string[] {
+  const raw = process.env[name];
   if (!raw) return [];
   return raw.split(",").map((phrase) => phrase.trim()).filter(Boolean);
+}
+
+function botNameParts(): string[] {
+  const botName = process.env.BOT_NAME ?? process.env.VOICE_BOT_NAME ?? "codey";
+  const normalized = botName.toLowerCase().trim();
+  const base = normalized.replace(/-?oracle$/, "");
+  return Array.from(new Set([normalized, base].filter(Boolean)));
+}
+
+function botTriggerNames(): string[] {
+  const names = new Set<string>();
+  for (const part of botNameParts()) {
+    names.add(part);
+    for (const alias of BOT_NAME_ALIASES[part] ?? []) {
+      names.add(alias);
+    }
+  }
+  return Array.from(names);
+}
+
+function buildDefaultBotPhrases(): string[] {
+  return botTriggerNames().flatMap((name) => [
+    `${name}ตอบหน่อย`,
+    `${name} ช่วย`,
+    `${name}ช่วย`,
+    name,
+  ]);
+}
+
+function triggerPhrases(): string[] {
+  return Array.from(
+    new Set([
+      ...buildDefaultBotPhrases(),
+      ...UNIVERSAL_TRIGGERS,
+      ...loadEnvPhrases("TRIGGER_PHRASES"),
+      ...loadEnvPhrases("TRIGGER_EXTRA_PHRASES"),
+    ].map((phrase) => phrase.trim()).filter(Boolean)),
+  );
 }
 
 function escapeRegex(text: string): string {
@@ -52,10 +67,8 @@ function escapeRegex(text: string): string {
 }
 
 function buildTriggerRegex(): RegExp {
-  return new RegExp(
-    `(?:${[...BUILTIN_TRIGGERS, ...loadExtraTriggers()].map(escapeRegex).join("|")})`,
-    "i",
-  );
+  const phrases = triggerPhrases().map(escapeRegex).join("|");
+  return new RegExp(`(?:${phrases})`, "i");
 }
 
 export function detectTrigger(text: string): boolean {
