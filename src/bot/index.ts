@@ -16,7 +16,7 @@ import {
 } from "./register.ts";
 import { leaveVoiceSession } from "../tools/voice-leave.ts";
 import { sayInVoice } from "../tools/voice-say.ts";
-import { setSpeakMode } from "../voice/speak-state.ts";
+import { isSpeakMode, setMute as setVoiceMute } from "../voice/speak-state.ts";
 import { VoiceSession } from "../voice/voice-session.ts";
 import {
   setActiveVoice,
@@ -67,12 +67,10 @@ function parseConfig(): BotConfig {
   const token = process.env.DISCORD_TOKEN;
   if (!token) throw new Error("DISCORD_TOKEN is required");
 
-  const voiceProfile = process.env.VOICE_PROFILE as VoiceProfile | undefined;
-  if (voiceProfile) {
-    const resolved = setActiveVoice(voiceProfile);
-    if (resolved.backend === "edge") {
-      process.env.TTS_VOICE = resolved.voice;
-    }
+  const voiceProfile = (process.env.VOICE_PROFILE ?? "premwadee") as VoiceProfile;
+  const resolved = setActiveVoice(voiceProfile);
+  if (resolved.backend === "edge") {
+    process.env.TTS_VOICE = resolved.voice;
   }
 
   return {
@@ -172,9 +170,9 @@ async function dispatchCommand(
     case "leave":
       return leaveVoice(runtime, command.guildId);
     case "mute":
-      return setMute(runtime, command.guildId, true);
+      return applyMute(runtime, command.guildId, true);
     case "unmute":
-      return setMute(runtime, command.guildId, false);
+      return applyMute(runtime, command.guildId, false);
     case "say":
       if (!command.text) throw new Error("say requires text");
       return speak(runtime, command.guildId, command.text);
@@ -218,6 +216,15 @@ async function joinVoice(runtime: BotRuntime, command: BotCommand): Promise<Chan
     channelName: channel.name,
     adapterCreator: channel.guild.voiceAdapterCreator,
     guild: channel.guild,
+    onTranscript: async () => {
+      await session!.flush();
+    },
+    onTrigger: async (text, userId) => {
+      if (!session?.guildId || !isSpeakMode(session.guildId)) return;
+      console.log(`[bot] trigger from ${userId}: ${text.slice(0, 120)}`);
+      const reply = await runtime.bridge.ask(text);
+      await sayInVoice(session, reply, runtime.config.voiceProfile);
+    },
   });
 
   return { id: channel.id, name: channel.name, guildId };
@@ -230,10 +237,11 @@ async function leaveVoice(
   const session = resolveSession(runtime, guildId);
   if (!session) return { transcriptPath: null };
   const transcriptPath = await leaveVoiceSession(session);
+  if (session.guildId) runtime.sessions.delete(session.guildId);
   return { transcriptPath };
 }
 
-function setMute(
+function applyMute(
   runtime: BotRuntime,
   guildId: string | undefined,
   mute: boolean,
@@ -242,7 +250,7 @@ function setMute(
   if (!session?.guildId || !session.channelId) {
     throw new Error("no active voice session");
   }
-  setSpeakMode(session.guildId, !mute);
+  setVoiceMute(session.guildId, mute);
   session.connection?.rejoin({
     channelId: session.channelId,
     selfDeaf: false,
@@ -258,7 +266,7 @@ async function speak(
 ): Promise<{ spoken: true }> {
   const session = resolveSession(runtime, guildId);
   if (!session) throw new Error("no active voice session");
-  await sayInVoice(session, text);
+  await sayInVoice(session, text, runtime.config.voiceProfile);
   return { spoken: true };
 }
 
@@ -272,7 +280,7 @@ async function think(
 
   const session = resolveSession(runtime, command.guildId);
   if (session?.connection) {
-    await sayInVoice(session, reply);
+    await sayInVoice(session, reply, runtime.config.voiceProfile);
   }
 
   return { reply };

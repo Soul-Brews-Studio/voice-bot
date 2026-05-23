@@ -18,6 +18,10 @@ export function setSpeakMode(guildId: string, on: boolean): void {
   console.log(`[speak-state] speak guild=${guildId} → ${on ? "ON" : "OFF"}`);
 }
 
+export function setMute(guildId: string, muted: boolean): void {
+  setSpeakMode(guildId, !muted);
+}
+
 export function isSpeakMode(guildId: string): boolean {
   return speakModes.get(guildId) ?? false;
 }

@@ -15,9 +15,15 @@ import {
 import type { Guild } from "discord.js";
 import {
   startSpeakerCapture,
+  clearRawRecorder,
+  getRawRecorder,
   type AudioChunk,
   type ChunkHandler,
 } from "./audio-pipeline.ts";
+import {
+  detectTrigger,
+  SpeakerTriggerDebouncer,
+} from "./trigger.ts";
 import { transcribeAndCleanup } from "../stt/index.ts";
 import {
   writeTranscriptFile,
@@ -36,6 +42,11 @@ export interface SessionStatus {
   segmentCount: number;
 }
 
+export interface VoiceSessionCallbacks {
+  onTranscript?: (segment: TranscriptSegment) => Promise<void> | void;
+  onTrigger?: (text: string, userId: string) => Promise<void> | void;
+}
+
 export interface ConnectArgs {
   channelId: string;
   guildId: string;
@@ -43,9 +54,13 @@ export interface ConnectArgs {
   adapterCreator: DiscordGatewayAdapterCreator;
   guild?: Guild;
   onChunk?: ChunkHandler;
+  onTranscript?: VoiceSessionCallbacks["onTranscript"];
+  onTrigger?: VoiceSessionCallbacks["onTrigger"];
   silenceThresholdMs?: number;
   maxChunkMs?: number;
   minFinalChunkMs?: number;
+  chunkFlushMs?: number;
+  autoFlushMs?: number;
 }
 
 export class VoiceSession {
@@ -55,12 +70,22 @@ export class VoiceSession {
   private _segments: TranscriptSegment[] = [];
   private _participants = new Map<string, string>();
   private _guild?: Guild;
+  private _autoFlushTimer?: ReturnType<typeof setInterval>;
+  private _callbacks: VoiceSessionCallbacks;
+  private readonly _triggerDebouncer: SpeakerTriggerDebouncer;
 
   channelId?: string;
   guildId?: string;
   channelName?: string;
   startedAt?: number;
   chunkCount = 0;
+
+  constructor(callbacks: VoiceSessionCallbacks = {}) {
+    this._callbacks = callbacks;
+    this._triggerDebouncer = new SpeakerTriggerDebouncer(({ text, userId }) =>
+      this._callbacks.onTrigger?.(text, userId),
+    );
+  }
 
   get state(): SessionState {
     return this._state;
@@ -98,6 +123,10 @@ export class VoiceSession {
     this.startedAt = Date.now();
     this.chunkCount = 0;
     this._guild = args.guild;
+    this._callbacks = {
+      onTranscript: args.onTranscript ?? this._callbacks.onTranscript,
+      onTrigger: args.onTrigger ?? this._callbacks.onTrigger,
+    };
     this._segments = [];
     this._participants.clear();
     this._activeSpeakers.clear();
@@ -114,14 +143,28 @@ export class VoiceSession {
     await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
     this._state = "recording";
     this.startRecording(args);
+    this.startAutoFlush(args.autoFlushMs);
   }
 
-  async leave(options: { saveTranscript?: boolean } = {}): Promise<string | null> {
+  async disconnect(options: { saveTranscript?: boolean } = {}): Promise<string | null> {
     if (this._state === "idle") return null;
 
     this._state = "leaving";
+    this.stopAutoFlush();
+    this._triggerDebouncer.clear();
     const transcriptPath =
-      options.saveTranscript === false ? null : await this.saveTranscript();
+      options.saveTranscript === false ? null : await this.flush();
+
+    const guildId = this.guildId;
+    if (guildId) {
+      await getRawRecorder(guildId)
+        .save(this.channelName ?? "voice")
+        .catch((error) => {
+          console.warn(`[voice-session] raw audio save failed: ${error.message}`);
+          return null;
+        })
+        .finally(() => clearRawRecorder(guildId));
+    }
 
     this._connection?.destroy();
     this._connection = null;
@@ -130,7 +173,15 @@ export class VoiceSession {
     return transcriptPath;
   }
 
+  leave(options: { saveTranscript?: boolean } = {}): Promise<string | null> {
+    return this.disconnect(options);
+  }
+
   async saveTranscript(): Promise<string> {
+    return this.flush();
+  }
+
+  async flush(): Promise<string> {
     if (!this.startedAt || !this.channelName) {
       throw new Error("cannot save transcript before session starts");
     }
@@ -149,7 +200,7 @@ export class VoiceSession {
   addNote(authorId: string, authorName: string, text: string): void {
     const now = Date.now();
     this._participants.set(authorId, authorName);
-    this._segments.push({
+    const segment: TranscriptSegment = {
       speaker: authorName,
       speakerId: authorId,
       startedAt: now,
@@ -157,7 +208,9 @@ export class VoiceSession {
       text,
       isNote: true,
       noteAuthor: authorName,
-    });
+    };
+    this._segments.push(segment);
+    void this._callbacks.onTranscript?.(segment);
   }
 
   private startRecording(args: ConnectArgs): void {
@@ -175,6 +228,7 @@ export class VoiceSession {
           guildId: args.guildId,
           silenceThresholdMs: args.silenceThresholdMs ?? 1_500,
           maxChunkMs: args.maxChunkMs ?? 30_000,
+          chunkFlushMs: args.chunkFlushMs,
           minFinalChunkMs: args.minFinalChunkMs ?? 1_500,
         },
         async (chunk) => {
@@ -198,14 +252,20 @@ export class VoiceSession {
 
     const speaker = await this.resolveSpeakerName(chunk.userId);
     this._participants.set(chunk.userId, speaker);
-    this._segments.push({
+    const segment: TranscriptSegment = {
       speaker,
       speakerId: chunk.userId,
       startedAt: chunk.startedAt,
       endedAt: chunk.endedAt,
       text: result.text,
       language: result.language,
-    });
+    };
+    this._segments.push(segment);
+    await this._callbacks.onTranscript?.(segment);
+
+    if (detectTrigger(result.text)) {
+      this._triggerDebouncer.push(chunk.userId, result.text);
+    }
   }
 
   private async resolveSpeakerName(userId: string): Promise<string> {
@@ -213,6 +273,24 @@ export class VoiceSession {
     if (cached) return cached;
     const member = await this._guild?.members.fetch(userId).catch(() => null);
     return member?.displayName ?? userId;
+  }
+
+  private startAutoFlush(autoFlushMs = Number(process.env.AUTO_FLUSH_MS) || 15 * 60 * 1000): void {
+    this.stopAutoFlush();
+    if (autoFlushMs <= 0) return;
+    this._autoFlushTimer = setInterval(() => {
+      if (this._state !== "recording" || this._segments.length === 0) return;
+      this.flush().catch((error) => {
+        console.warn(`[voice-session] auto-flush failed: ${error.message}`);
+      });
+    }, autoFlushMs);
+    this._autoFlushTimer.unref?.();
+  }
+
+  private stopAutoFlush(): void {
+    if (!this._autoFlushTimer) return;
+    clearInterval(this._autoFlushTimer);
+    this._autoFlushTimer = undefined;
   }
 }
 
