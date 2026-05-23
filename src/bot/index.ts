@@ -14,8 +14,8 @@ import {
   type ChannelRef,
   type FollowRef,
 } from "./register.ts";
-import { leaveVoiceSession } from "../tools/voice-leave.ts";
-import { sayInVoice } from "../tools/voice-say.ts";
+import { setDiscordToolContext } from "../tools/context.ts";
+import { playTextInSession } from "../tools/voice-say.ts";
 import { isSpeakMode, setMute as setVoiceMute } from "../voice/speak-state.ts";
 import { VoiceSession } from "../voice/voice-session.ts";
 import {
@@ -100,6 +100,15 @@ export async function startBotProcess(
     followTarget: null,
     shuttingDown: false,
   };
+  setDiscordToolContext({
+    client,
+    sessions,
+    voiceProfile: config.voiceProfile,
+    joinVoice: (guildId, channelId) =>
+      joinVoice(runtime, { action: "join", guildId, channelId }),
+    leaveVoice: (guildId) => leaveVoice(runtime, guildId),
+    sayInVoice: (guildId, text) => speak(runtime, guildId, text),
+  });
 
   runtime.commandServer = startCommandServer(runtime);
   const commandUrl = runtime.commandServer.url.toString().replace(/\/$/, "");
@@ -225,7 +234,7 @@ async function joinVoice(runtime: BotRuntime, command: BotCommand): Promise<Chan
       if (!session?.guildId || !isSpeakMode(session.guildId)) return;
       console.log(`[bot] trigger from ${userId}: ${text.slice(0, 120)}`);
       const reply = await runtime.bridge.ask(text);
-      await sayInVoice(session, reply, runtime.config.voiceProfile);
+      await playTextInSession(session, reply, runtime.config.voiceProfile);
     },
   });
 
@@ -238,7 +247,7 @@ async function leaveVoice(
 ): Promise<{ transcriptPath: string | null }> {
   const session = resolveSession(runtime, guildId);
   if (!session) return { transcriptPath: null };
-  const transcriptPath = await leaveVoiceSession(session);
+  const transcriptPath = await session.leave();
   if (session.guildId) runtime.sessions.delete(session.guildId);
   return { transcriptPath };
 }
@@ -268,7 +277,7 @@ async function speak(
 ): Promise<{ spoken: true }> {
   const session = resolveSession(runtime, guildId);
   if (!session) throw new Error("no active voice session");
-  await sayInVoice(session, text, runtime.config.voiceProfile);
+  await playTextInSession(session, text, runtime.config.voiceProfile);
   return { spoken: true };
 }
 
@@ -282,7 +291,7 @@ async function think(
 
   const session = resolveSession(runtime, command.guildId);
   if (session?.connection) {
-    await sayInVoice(session, reply, runtime.config.voiceProfile);
+    await playTextInSession(session, reply, runtime.config.voiceProfile);
   }
 
   return { reply };

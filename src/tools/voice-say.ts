@@ -2,8 +2,9 @@ import { AudioPlayerStatus, createAudioPlayer, createAudioResource } from "@disc
 import { deleteTtsFile, synthesizeTts } from "../tts/index.ts";
 import { VoiceSession } from "../voice/voice-session.ts";
 import type { VoiceProfile } from "../voice-config.ts";
+import { getDiscordToolContext } from "./context.ts";
 
-export async function sayInVoice(
+export async function playTextInSession(
   session: VoiceSession,
   text: string,
   voiceProfile?: VoiceProfile,
@@ -20,4 +21,11 @@ export async function sayInVoice(
     player.once("error", reject);
     player.play(createAudioResource(ttsPath));
   }).finally(() => deleteTtsFile(ttsPath));
+}
+
+export async function sayInVoice(
+  guildId: string,
+  text: string,
+): Promise<unknown> {
+  return getDiscordToolContext().sayInVoice(guildId, text);
 }

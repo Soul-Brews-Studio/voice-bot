@@ -1,7 +1,5 @@
-import { VoiceSession } from "../voice/voice-session.ts";
+import { getDiscordToolContext } from "./context.ts";
 
-export async function leaveVoiceSession(
-  session: VoiceSession,
-): Promise<string | null> {
-  return session.leave();
+export function leaveVoiceChannel(guildId: string): Promise<unknown> {
+  return getDiscordToolContext().leaveVoice(guildId);
 }
