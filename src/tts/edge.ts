@@ -8,7 +8,8 @@ import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import type { TtsFile } from "./types.ts";
+
+export type TtsFile = string;
 
 const TMP_DIR = join(homedir(), ".claude", "channels", "codey", "voice-tmp");
 const EDGE_TTS_BIN = process.env.EDGE_TTS_BIN || "edge-tts";
