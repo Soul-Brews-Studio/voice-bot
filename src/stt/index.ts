@@ -1,8 +1,8 @@
 /**
  * STT dispatcher — picks backend via STT_BACKEND env.
+ *   - "typhoon":     OpenTyphoon Typhoon ASR when TYPHOON_API_KEY exists
  *   - "groq":        Groq Whisper Large V3 cloud when GROQ_API_KEY exists
  *   - "whisper-cpp": local whisper.cpp fallback
- *   - "typhoon":     placeholder for later Thai-native ASR work
  *
  * Post-process: every transcript is run through ./hallucinations.ts.
  * Hallucinated text → empty string (caller treats as silence, no segment).
@@ -16,7 +16,9 @@ export type SttBackend = "whisper-cpp" | "groq" | "typhoon";
 export function sttBackend(): SttBackend {
   const configured = process.env.STT_BACKEND as SttBackend | undefined;
   if (configured) return configured;
-  return process.env.GROQ_API_KEY ? "groq" : "whisper-cpp";
+  if (process.env.TYPHOON_API_KEY) return "typhoon";
+  if (process.env.GROQ_API_KEY) return "groq";
+  return "whisper-cpp";
 }
 
 export async function transcribe(wavPath: string): Promise<TranscribeResult> {
@@ -41,9 +43,8 @@ async function transcribeRaw(wavPath: string): Promise<TranscribeResult> {
     return transcribeGroq(wavPath);
   }
   if (backend === "typhoon") {
-    console.warn("[stt] typhoon backend not implemented yet; falling back to whisper-cpp");
-    const { transcribeWhisperCpp } = await import("./whisper-cpp.ts");
-    return transcribeWhisperCpp(wavPath);
+    const { transcribeTyphoon } = await import("./typhoon.ts");
+    return transcribeTyphoon(wavPath);
   }
   throw new Error(`[stt] unknown STT_BACKEND: ${backend}`);
 }
