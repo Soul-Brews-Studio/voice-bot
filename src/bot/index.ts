@@ -24,6 +24,11 @@ import {
   setActiveVoice,
   type VoiceProfile,
 } from "../voice-config.ts";
+import {
+  connectMqttPublisher,
+  disconnectMqttPublisher,
+  publishSegment,
+} from "../mqtt-publisher.ts";
 
 type BotCommandAction =
   | "join"
@@ -93,6 +98,7 @@ export async function startBotProcess(
   config: BotConfig = parseConfig(),
 ): Promise<BotRuntime> {
   const sessions = new Map<string, VoiceSession>();
+  connectMqttPublisher();
   const bridge = createClaudeBridge();
   const client = createDiscordClient();
   const runtime: BotRuntime = {
@@ -249,8 +255,16 @@ async function joinVoice(runtime: BotRuntime, command: BotCommand): Promise<Chan
         language: result.language,
       });
     },
-    onTranscript: async () => {
-      await session!.flush();
+    onTranscript: (segment) => {
+      void Promise.all([
+        session!.flush(),
+        publishSegment(segment, {
+          channel: channel.name,
+          guild: channel.guild.name,
+        }),
+      ]).catch((error) => {
+        console.warn(`[bot] transcript side effect failed: ${error?.message ?? error}`);
+      });
     },
     onTrigger: async (text, userId) => {
       if (!session?.guildId || !isSpeakMode(session.guildId)) return;
@@ -415,6 +429,7 @@ async function shutdown(runtime: BotRuntime): Promise<void> {
   );
 
   await runtime.bridge.close();
+  await disconnectMqttPublisher();
   runtime.client.destroy();
   runtime.commandServer.stop(true);
 }
