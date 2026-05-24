@@ -18,7 +18,7 @@ import {
 import { transcribeAndCleanup } from "../stt/index.ts";
 import { setDiscordToolContext } from "../tools/context.ts";
 import { playTextInSession } from "../tools/voice-say.ts";
-import { isSpeakMode, setMute as setVoiceMute } from "../voice/speak-state.ts";
+import { setMute as setVoiceMute } from "../voice/speak-state.ts";
 import { VoiceSession } from "../voice/voice-session.ts";
 import {
   setActiveVoice,
@@ -267,10 +267,12 @@ async function joinVoice(runtime: BotRuntime, command: BotCommand): Promise<Chan
       });
     },
     onTrigger: async (text, userId) => {
-      if (!session?.guildId || !isSpeakMode(session.guildId)) return;
+      if (!session?.guildId) return;
       console.log(`[bot] trigger from ${userId}: ${text.slice(0, 120)}`);
       const reply = await runtime.bridge.ask(text);
+      console.log(`[bot] Claude reply ready chars=${reply.length}`);
       await playTextInSession(session, reply, runtime.config.voiceProfile);
+      console.log(`[bot] trigger reply played user=${userId}`);
     },
   });
 
