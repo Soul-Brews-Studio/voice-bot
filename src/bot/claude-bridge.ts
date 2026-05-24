@@ -23,8 +23,24 @@ interface ToolCall {
   arguments?: Record<string, unknown>;
 }
 
+interface PendingRequest {
+  resolve: (reply: string) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const DEFAULT_CLAUDE_ARGS = [
+  "-p",
+  "--input-format",
+  "stream-json",
+  "--output-format",
+  "stream-json",
+  "--verbose",
+  "--dangerously-skip-permissions",
+];
+
 function parseArgs(raw: string | undefined): string[] {
-  if (!raw?.trim()) return ["-p"];
+  if (!raw?.trim()) return DEFAULT_CLAUDE_ARGS;
   return raw.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)?.map((part) =>
     part.replace(/^["']|["']$/g, ""),
   ) ?? [];
@@ -34,70 +50,214 @@ export async function sendToClaude(
   message: string,
   options: ClaudeBridgeOptions = {},
 ): Promise<string> {
-  const tools = options.tools ?? discordTools;
-  const maxToolRounds = options.maxToolRounds ?? 2;
-  let prompt = withToolInstructions(message, tools);
-  for (let round = 0; round <= maxToolRounds; round++) {
-    const reply = await runClaudePrompt(prompt, options);
-    const toolCall = extractToolCall(reply);
-    if (!toolCall) return reply;
-
-    const result = await callDiscordTool(toolCall.name, toolCall.arguments ?? {});
-    prompt =
-      `${message}\n\n` +
-      `Tool ${toolCall.name} returned:\n${JSON.stringify(result, null, 2)}\n\n` +
-      "Reply to the user with the final answer. If another Discord tool is required, return another TOOL_CALL line.";
+  const session = new PersistentClaudeSession(options);
+  try {
+    return await session.ask(message);
+  } finally {
+    await session.close();
   }
-  throw new Error("[claude-bridge] exceeded tool call round limit");
 }
 
-async function runClaudePrompt(
-  prompt: string,
-  options: ClaudeBridgeOptions,
-): Promise<string> {
-  const command = options.command ?? process.env.CLAUDE_CMD ?? "claude";
-  const args = options.args ?? parseArgs(process.env.CLAUDE_ARGS);
-  const timeoutMs =
-    options.timeoutMs ??
-    (Number(process.env.CLAUDE_REPLY_TIMEOUT_MS) || 90_000);
+class PersistentClaudeSession {
+  private proc?: any;
+  private pending?: PendingRequest;
+  private queue: Promise<void> = Promise.resolve();
+  private stderr = "";
+  private closed = false;
 
-  const proc = Bun.spawn([command, ...args], {
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-    cwd: options.cwd ?? process.env.ORACLE_REPO ?? process.cwd(),
-    env: process.env,
-  });
+  constructor(private readonly options: ClaudeBridgeOptions = {}) {}
 
-  const timeout = setTimeout(() => {
+  ask(message: string): Promise<string> {
+    const run = this.queue
+      .catch(() => undefined)
+      .then(() => this.askWithTools(message));
+    this.queue = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    const proc = this.proc;
+    if (!proc) return;
+
     try {
-      proc.kill();
+      proc.stdin.end();
     } catch {
-      // process already exited
+      // already closed
     }
-  }, timeoutMs);
 
-  try {
-    proc.stdin.write(prompt);
-    proc.stdin.end();
-
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
+    await Promise.race([
+      proc.exited.catch(() => undefined),
+      new Promise((resolve) => setTimeout(resolve, 2_000)),
     ]);
 
-    if (exitCode !== 0) {
-      throw new Error(
-        `[claude-bridge] ${command} exited ${exitCode}: ${stderr.trim() || "no stderr"}`,
+    if (proc.exitCode === null) {
+      try {
+        proc.kill();
+      } catch {
+        // already exited
+      }
+    }
+  }
+
+  private async askWithTools(message: string): Promise<string> {
+    const tools = this.options.tools ?? discordTools;
+    const maxToolRounds = this.options.maxToolRounds ?? 2;
+    let prompt = withToolInstructions(message, tools);
+    for (let round = 0; round <= maxToolRounds; round++) {
+      const reply = await this.askOnce(prompt);
+      const toolCall = extractToolCall(reply);
+      if (!toolCall) return reply;
+
+      const result = await callDiscordTool(toolCall.name, toolCall.arguments ?? {});
+      prompt =
+        `${message}\n\n` +
+        `Tool ${toolCall.name} returned:\n${JSON.stringify(result, null, 2)}\n\n` +
+        "Reply to the user with the final answer. If another Discord tool is required, return another TOOL_CALL line.";
+    }
+    throw new Error("[claude-bridge] exceeded tool call round limit");
+  }
+
+  private askOnce(prompt: string): Promise<string> {
+    if (this.closed) throw new Error("[claude-bridge] session is closed");
+    this.ensureStarted();
+    if (!this.proc) throw new Error("[claude-bridge] Claude process did not start");
+    if (this.pending) throw new Error("[claude-bridge] request already in flight");
+
+    const timeoutMs =
+      this.options.timeoutMs ??
+      (Number(process.env.CLAUDE_REPLY_TIMEOUT_MS) || 90_000);
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending = undefined;
+        try {
+          this.proc?.kill();
+        } catch {
+          // already exited
+        }
+        reject(new Error("[claude-bridge] Claude reply timed out"));
+      }, timeoutMs);
+
+      this.pending = { resolve, reject, timer };
+      const payload = {
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: prompt }],
+        },
+      };
+      try {
+        this.proc!.stdin.write(`${JSON.stringify(payload)}\n`);
+      } catch (error: any) {
+        clearTimeout(timer);
+        this.pending = undefined;
+        reject(new Error(`[claude-bridge] stdin write failed: ${error?.message ?? error}`));
+      }
+    });
+  }
+
+  private ensureStarted(): void {
+    if (this.proc) return;
+
+    const command = this.options.command ?? process.env.CLAUDE_CMD ?? "claude";
+    const args = this.options.args ?? parseArgs(process.env.CLAUDE_ARGS);
+    const cwd = this.options.cwd ?? process.env.ORACLE_REPO ?? process.cwd();
+    this.proc = Bun.spawn([command, ...args], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      cwd,
+      env: process.env,
+    });
+    this.proc.unref?.();
+    this.readStdout(this.proc.stdout);
+    this.readStderr(this.proc.stderr);
+    this.proc.exited.then((code: number) => {
+      this.proc = undefined;
+      const pending = this.pending;
+      if (!pending) return;
+      this.pending = undefined;
+      clearTimeout(pending.timer);
+      pending.reject(
+        new Error(
+          `[claude-bridge] ${command} exited ${code}: ${this.stderr.trim() || "no stderr"}`,
+        ),
       );
+    });
+    console.log(`[claude-bridge] persistent Claude session started cwd=${cwd}`);
+  }
+
+  private async readStdout(stream: ReadableStream<Uint8Array>): Promise<void> {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let newline = buffer.indexOf("\n");
+        while (newline !== -1) {
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (line) this.handleOutputLine(line);
+          newline = buffer.indexOf("\n");
+        }
+      }
+      const rest = buffer.trim();
+      if (rest) this.handleOutputLine(rest);
+    } catch (error: any) {
+      console.warn(`[claude-bridge] stdout read failed: ${error?.message ?? error}`);
+    }
+  }
+
+  private async readStderr(stream: ReadableStream<Uint8Array>): Promise<void> {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        this.stderr += decoder.decode(value, { stream: true });
+      }
+    } catch {
+      // stderr reader is best-effort
+    }
+  }
+
+  private handleOutputLine(line: string): void {
+    let event: any;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      console.log(`[claude-bridge] ${line}`);
+      return;
     }
 
-    const reply = stdout.trim();
-    if (!reply) throw new Error("[claude-bridge] empty Claude reply");
-    return reply;
-  } finally {
-    clearTimeout(timeout);
+    if (event.type === "system" && event.subtype === "init") {
+      console.log(`[claude-bridge] session_id=${event.session_id}`);
+      return;
+    }
+
+    if (event.type !== "result") return;
+
+    const pending = this.pending;
+    if (!pending) return;
+    this.pending = undefined;
+    clearTimeout(pending.timer);
+
+    if (event.is_error) {
+      pending.reject(new Error(`[claude-bridge] ${event.result ?? "Claude error"}`));
+      return;
+    }
+
+    const reply = String(event.result ?? "").trim();
+    if (!reply) {
+      pending.reject(new Error("[claude-bridge] empty Claude reply"));
+      return;
+    }
+    pending.resolve(reply);
   }
 }
 
@@ -152,12 +312,13 @@ function parseToolJson(raw: string): ToolCall | null {
 export function createClaudeBridge(
   options: ClaudeBridgeOptions = {},
 ): ClaudeBridge {
+  const session = new PersistentClaudeSession(options);
   return {
     ask(message: string): Promise<string> {
-      return sendToClaude(message, options);
+      return session.ask(message);
     },
     async close(): Promise<void> {
-      // Subprocess mode is per request, so there is no persistent handle.
+      await session.close();
     },
   };
 }
