@@ -16,11 +16,12 @@
  *   ## HH:MM:SS — [note from Speaker]
  *   <text>
  */
+import { existsSync, readdirSync, type Dirent } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
-const TRANSCRIPT_DIR =
-  process.env.TRANSCRIPT_DIR || "transcripts";
+const GHQ_DIR = join(homedir(), "ghq");
 
 export interface TranscriptSegment {
   speaker: string;
@@ -114,16 +115,58 @@ function slugify(s: string): string {
     .slice(0, 50) || "voice";
 }
 
+function botName(): string {
+  return process.env.BOT_NAME ?? process.env.VOICE_BOT_NAME ?? "codey";
+}
+
+function findBotRepo(root: string, name: string, maxDepth: number): string | null {
+  if (maxDepth < 0 || !existsSync(root)) return null;
+
+  let entries: Dirent<string>[];
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const path = join(root, entry.name);
+    if (entry.name.startsWith(name) && existsSync(join(path, "ψ"))) {
+      return path;
+    }
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const found = findBotRepo(join(root, entry.name), name, maxDepth - 1);
+    if (found) return found;
+  }
+
+  return null;
+}
+
+function resolveTranscriptDir(): string {
+  if (process.env.TRANSCRIPT_DIR) return process.env.TRANSCRIPT_DIR;
+
+  const name = botName();
+  const repo = findBotRepo(GHQ_DIR, name, 4);
+  if (repo) return join(repo, "ψ", "transcripts");
+
+  return join(homedir(), ".claude", "channels", name, "transcripts");
+}
+
 export async function writeTranscriptFile(
   header: TranscriptHeader,
   segments: TranscriptSegment[],
 ): Promise<string> {
-  await mkdir(TRANSCRIPT_DIR, { recursive: true });
+  const transcriptDir = resolveTranscriptDir();
+  await mkdir(transcriptDir, { recursive: true });
   const d = new Date(header.sessionStart);
   const ymd = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const hm = `${pad(d.getHours())}${pad(d.getMinutes())}`;
-  const filename = `${ymd}_${hm}_${slugify(header.channelName)}.md`;
-  const filepath = join(TRANSCRIPT_DIR, filename);
+  const filename = `${ymd}_${hm}_${slugify(botName())}_${slugify(header.channelName)}.md`;
+  const filepath = join(transcriptDir, filename);
   await writeFile(filepath, renderTranscript(header, segments));
   return filepath;
 }
