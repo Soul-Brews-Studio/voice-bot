@@ -121,20 +121,9 @@ class PersistentClaudeSession {
   private sessionId: string = crypto.randomUUID();
   private label = defaultSessionLabel();
   private isFirstCall = true;
-  private selectedBridge?: BridgeMode;
   private mawWakeAttempted = false;
 
   constructor(private readonly options: ClaudeBridgeOptions = {}) {}
-
-  prepare(): void {
-    void this.resolveBridgeMode()
-      .then((mode) => {
-        if (mode === "maw-hey") return this.ensureMawSessionStarted();
-      })
-      .catch((error: any) => {
-        console.warn(`[claude-bridge] bridge prepare failed: ${error?.message ?? error}`);
-      });
-  }
 
   ask(message: string): Promise<string> {
     const run = this.queue
@@ -177,8 +166,7 @@ class PersistentClaudeSession {
   private async askOnce(prompt: string): Promise<string> {
     if (this.closed) throw new Error("[claude-bridge] session is closed");
 
-    const mode = await this.resolveBridgeMode();
-    if (mode === "maw-hey") {
+    if (this.bridgeMode() === "maw-hey") {
       try {
         return await this.askViaMawHey(prompt);
       } catch (error: any) {
@@ -191,26 +179,8 @@ class PersistentClaudeSession {
     return this.askViaClaudeP(prompt);
   }
 
-  private async resolveBridgeMode(): Promise<BridgeMode> {
-    const configured = process.env.BRIDGE_MODE;
-    if (configured === "maw-hey" || configured === "claude-p") return configured;
-    if (!this.selectedBridge) {
-      this.selectedBridge = (await this.hasMaw()) ? "maw-hey" : "claude-p";
-      console.log(`[claude-bridge] bridge mode=${this.selectedBridge}`);
-    }
-    return this.selectedBridge;
-  }
-
-  private async hasMaw(): Promise<boolean> {
-    try {
-      const proc = Bun.spawn(["maw", "--help"], {
-        stdout: "ignore",
-        stderr: "ignore",
-      });
-      return (await proc.exited) === 0;
-    } catch {
-      return false;
-    }
+  private bridgeMode(): BridgeMode {
+    return process.env.BRIDGE_MODE === "maw-hey" ? "maw-hey" : "claude-p";
   }
 
   private async ensureMawSessionStarted(): Promise<void> {
@@ -449,7 +419,6 @@ export function createClaudeBridge(
   options: ClaudeBridgeOptions = {},
 ): ClaudeBridge {
   const session = new PersistentClaudeSession(options);
-  session.prepare();
   return {
     ask(message: string): Promise<string> {
       return session.ask(message);
