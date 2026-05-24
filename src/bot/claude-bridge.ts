@@ -29,8 +29,9 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
-const DEFAULT_CLAUDE_ARGS = [
-  "-p",
+const DEFAULT_CLAUDE_PERSISTENT_ARGS = [
+  "--model",
+  "sonnet",
   "--input-format",
   "stream-json",
   "--output-format",
@@ -40,10 +41,61 @@ const DEFAULT_CLAUDE_ARGS = [
 ];
 
 function parseArgs(raw: string | undefined): string[] {
-  if (!raw?.trim()) return DEFAULT_CLAUDE_ARGS;
+  if (!raw?.trim()) return [];
   return raw.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)?.map((part) =>
     part.replace(/^["']|["']$/g, ""),
   ) ?? [];
+}
+
+function removeFlag(args: string[], flag: string, takesValue = false): string[] {
+  const result: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === flag) {
+      if (takesValue) i++;
+      continue;
+    }
+    result.push(args[i]!);
+  }
+  return result;
+}
+
+function setFlag(args: string[], flag: string, value: string): string[] {
+  return [...removeFlag(args, flag, true), flag, value];
+}
+
+function ensureFlag(args: string[], flag: string): string[] {
+  return args.includes(flag) ? args : [...args, flag];
+}
+
+function sessionLabel(): string {
+  const botName = process.env.BOT_NAME ?? process.env.VOICE_BOT_NAME ?? "voice-bot";
+  const d = new Date();
+  const stamp =
+    `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}` +
+    `-${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
+  return `${botName}-${stamp}`;
+}
+
+function persistentArgs(sessionId: string, label: string): string[] {
+  const configured = process.env.CLAUDE_PERSISTENT_ARGS;
+  let args = configured?.trim()
+    ? parseArgs(configured)
+    : [...DEFAULT_CLAUDE_PERSISTENT_ARGS];
+
+  // Do not inherit CLAUDE_ARGS here. It is often "-p --model sonnet" for
+  // one-shot calls and lacks the stream-json protocol needed for queued asks.
+  args = removeFlag(args, "-p");
+  args = removeFlag(args, "--print");
+  args = setFlag(args, "--input-format", "stream-json");
+  args = setFlag(args, "--output-format", "stream-json");
+  args = ensureFlag(args, "--verbose");
+  args = ensureFlag(args, "--dangerously-skip-permissions");
+  args = setFlag(args, "--session-id", sessionId);
+  args = setFlag(args, "--name", label);
+
+  // Claude Code requires print mode for stream-json I/O, but with
+  // --input-format=stream-json the process remains alive until stdin closes.
+  return ["-p", ...args];
 }
 
 export async function sendToClaude(
@@ -64,6 +116,8 @@ class PersistentClaudeSession {
   private queue: Promise<void> = Promise.resolve();
   private stderr = "";
   private closed = false;
+  private readonly sessionId = crypto.randomUUID();
+  private readonly label = sessionLabel();
 
   constructor(private readonly options: ClaudeBridgeOptions = {}) {}
 
@@ -161,14 +215,18 @@ class PersistentClaudeSession {
     if (this.proc) return;
 
     const command = this.options.command ?? process.env.CLAUDE_CMD ?? "claude";
-    const args = this.options.args ?? parseArgs(process.env.CLAUDE_ARGS);
+    const args = this.options.args ?? persistentArgs(this.sessionId, this.label);
     const cwd = this.options.cwd ?? process.env.ORACLE_REPO ?? process.cwd();
     this.proc = Bun.spawn([command, ...args], {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
       cwd,
-      env: process.env,
+      env: {
+        ...process.env,
+        VOICE_BOT_CLAUDE_SESSION_ID: this.sessionId,
+        VOICE_BOT_CLAUDE_SESSION_LABEL: this.label,
+      },
     });
     this.proc.unref?.();
     this.readStdout(this.proc.stdout);
@@ -185,7 +243,9 @@ class PersistentClaudeSession {
         ),
       );
     });
-    console.log(`[claude-bridge] persistent Claude session started cwd=${cwd}`);
+    console.log(
+      `[claude-bridge] persistent Claude session started label=${this.label} session_id=${this.sessionId} cwd=${cwd}`,
+    );
   }
 
   private async readStdout(stream: ReadableStream<Uint8Array>): Promise<void> {
