@@ -41,6 +41,15 @@ export interface TranscriptHeader {
   participants: string[];
 }
 
+export interface VoiceSessionMetadata {
+  sessionId: string;
+  botName: string;
+  channel: string;
+  guild: string;
+  startedAt: string;
+  endedAt: string | null;
+}
+
 function pad(n: number): string {
   return String(n).padStart(2, "0");
 }
@@ -146,8 +155,13 @@ function findBotRepo(root: string, name: string, maxDepth: number): string | nul
   return null;
 }
 
-function resolveTranscriptDir(): string {
+export function resolveTranscriptDir(): string {
   if (process.env.TRANSCRIPT_DIR) return process.env.TRANSCRIPT_DIR;
+
+  const oracleRepo = process.env.ORACLE_REPO;
+  if (oracleRepo && existsSync(join(oracleRepo, "ψ"))) {
+    return join(oracleRepo, "ψ", "transcripts");
+  }
 
   const name = botName();
   const repo = findBotRepo(GHQ_DIR, name, 4);
@@ -156,16 +170,35 @@ function resolveTranscriptDir(): string {
   return join(homedir(), ".claude", "channels", name, "transcripts");
 }
 
+export function transcriptBasename(
+  startedAt: number,
+  channelName: string,
+): string {
+  const d = new Date(startedAt);
+  const ymd = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const hm = `${pad(d.getHours())}${pad(d.getMinutes())}`;
+  return `${ymd}_${hm}_${slugify(botName())}_${slugify(channelName)}`;
+}
+
+export async function writeVoiceSessionMetadata(
+  metadata: VoiceSessionMetadata,
+  startedAt: number,
+): Promise<string> {
+  const transcriptDir = resolveTranscriptDir();
+  await mkdir(transcriptDir, { recursive: true });
+  const filename = `${transcriptBasename(startedAt, metadata.channel)}.session.json`;
+  const filepath = join(transcriptDir, filename);
+  await writeFile(filepath, `${JSON.stringify(metadata, null, 2)}\n`);
+  return filepath;
+}
+
 export async function writeTranscriptFile(
   header: TranscriptHeader,
   segments: TranscriptSegment[],
 ): Promise<string> {
   const transcriptDir = resolveTranscriptDir();
   await mkdir(transcriptDir, { recursive: true });
-  const d = new Date(header.sessionStart);
-  const ymd = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  const hm = `${pad(d.getHours())}${pad(d.getMinutes())}`;
-  const filename = `${ymd}_${hm}_${slugify(botName())}_${slugify(header.channelName)}.md`;
+  const filename = `${transcriptBasename(header.sessionStart, header.channelName)}.md`;
   const filepath = join(transcriptDir, filename);
   await writeFile(filepath, renderTranscript(header, segments));
   return filepath;

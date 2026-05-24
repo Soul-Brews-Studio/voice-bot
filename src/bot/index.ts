@@ -29,6 +29,10 @@ import {
   disconnectMqttPublisher,
   publishSegment,
 } from "../mqtt-publisher.ts";
+import {
+  writeVoiceSessionMetadata,
+  type VoiceSessionMetadata,
+} from "../transcript-writer.ts";
 
 type BotCommandAction =
   | "join"
@@ -66,6 +70,10 @@ interface BotRuntime {
   commandUrl?: string;
   guildIds: string[];
   sessions: Map<string, VoiceSession>;
+  voiceSessionMetadata: Map<
+    string,
+    { metadata: VoiceSessionMetadata; startedAt: number; path: string }
+  >;
   followTarget: FollowRef | null;
   shuttingDown: boolean;
 }
@@ -109,6 +117,7 @@ export async function startBotProcess(
     commandUrl: undefined,
     guildIds: [],
     sessions,
+    voiceSessionMetadata: new Map(),
     followTarget: null,
     shuttingDown: false,
   };
@@ -226,6 +235,7 @@ async function joinVoice(runtime: BotRuntime, command: BotCommand): Promise<Chan
   const guildId = command.guildId ?? channel.guild.id;
   let session = runtime.sessions.get(guildId);
   if (session && session.state !== "idle") {
+    await endVoiceSessionMetadata(runtime, guildId);
     await session.leave({ saveTranscript: false });
   }
 
@@ -275,6 +285,13 @@ async function joinVoice(runtime: BotRuntime, command: BotCommand): Promise<Chan
       console.log(`[bot] trigger reply played user=${userId}`);
     },
   });
+  await startVoiceSessionMetadata(
+    runtime,
+    guildId,
+    channel.name,
+    channel.guild.name,
+    session.startedAt ?? Date.now(),
+  );
 
   const currentChannel = { id: channel.id, name: channel.name, guildId };
   await sendImmediateHeartbeat(runtime, "join");
@@ -294,6 +311,9 @@ async function leaveVoice(
   const sessionGuildId = session.guildId ?? guildId;
   const transcriptPath = await session.leave();
   if (sessionGuildId) {
+    await endVoiceSessionMetadata(runtime, sessionGuildId);
+  }
+  if (sessionGuildId) {
     runtime.sessions.delete(sessionGuildId);
   } else {
     for (const [key, value] of runtime.sessions.entries()) {
@@ -303,6 +323,50 @@ async function leaveVoice(
   runtime.followTarget = null;
   await sendImmediateHeartbeat(runtime, "leave");
   return { transcriptPath };
+}
+
+async function startVoiceSessionMetadata(
+  runtime: BotRuntime,
+  guildId: string,
+  channelName: string,
+  guildName: string,
+  startedAt: number,
+): Promise<void> {
+  const sessionId = crypto.randomUUID();
+  const label = voiceSessionLabel(runtime.config.botName, startedAt);
+  await runtime.bridge.useSession(sessionId, label);
+
+  const metadata: VoiceSessionMetadata = {
+    sessionId,
+    botName: runtime.config.botName,
+    channel: channelName,
+    guild: guildName,
+    startedAt: new Date(startedAt).toISOString(),
+    endedAt: null,
+  };
+  const path = await writeVoiceSessionMetadata(metadata, startedAt);
+  runtime.voiceSessionMetadata.set(guildId, { metadata, startedAt, path });
+  console.log(`[bot] voice session started id=${sessionId} label=${label} file=${path}`);
+}
+
+async function endVoiceSessionMetadata(
+  runtime: BotRuntime,
+  guildId: string,
+): Promise<void> {
+  const record = runtime.voiceSessionMetadata.get(guildId);
+  if (!record) return;
+  record.metadata.endedAt = new Date().toISOString();
+  const path = await writeVoiceSessionMetadata(record.metadata, record.startedAt);
+  runtime.voiceSessionMetadata.delete(guildId);
+  console.log(`[bot] voice session ended id=${record.metadata.sessionId} file=${path}`);
+}
+
+function voiceSessionLabel(botName: string, startedAt: number): string {
+  const d = new Date(startedAt);
+  const stamp =
+    `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}` +
+    `-${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
+  return `${botName}-${stamp}`;
 }
 
 async function applyMute(
@@ -423,11 +487,18 @@ async function shutdown(runtime: BotRuntime): Promise<void> {
   });
 
   await Promise.all(
-    Array.from(runtime.sessions.values()).map((session) =>
-      session.leave().catch((error) => {
+    Array.from(runtime.sessions.values()).map(async (session) => {
+      if (session.guildId) {
+        await endVoiceSessionMetadata(runtime, session.guildId).catch((error) => {
+          console.warn(
+            `[bot] voice session metadata close failed: ${error.message}`,
+          );
+        });
+      }
+      await session.leave().catch((error) => {
         console.warn(`[bot] voice leave failed: ${error.message}`);
-      }),
-    ),
+      });
+    }),
   );
 
   await runtime.bridge.close();

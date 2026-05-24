@@ -6,6 +6,7 @@ import {
 
 export interface ClaudeBridge {
   ask(message: string): Promise<string>;
+  useSession(sessionId: string, label?: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -67,7 +68,7 @@ function ensureFlag(args: string[], flag: string): string[] {
   return args.includes(flag) ? args : [...args, flag];
 }
 
-function sessionLabel(): string {
+function defaultSessionLabel(): string {
   const botName = process.env.BOT_NAME ?? process.env.VOICE_BOT_NAME ?? "voice-bot";
   const d = new Date();
   const stamp =
@@ -116,8 +117,8 @@ class PersistentClaudeSession {
   private queue: Promise<void> = Promise.resolve();
   private stderr = "";
   private closed = false;
-  private readonly sessionId = crypto.randomUUID();
-  private readonly label = sessionLabel();
+  private sessionId: string = crypto.randomUUID();
+  private label = defaultSessionLabel();
 
   constructor(private readonly options: ClaudeBridgeOptions = {}) {}
 
@@ -129,8 +130,21 @@ class PersistentClaudeSession {
     return run;
   }
 
+  async useSession(sessionId: string, label = defaultSessionLabel()): Promise<void> {
+    if (this.sessionId === sessionId && this.label === label) return;
+    await this.closeProcess();
+    this.closed = false;
+    this.sessionId = sessionId;
+    this.label = label;
+    this.stderr = "";
+  }
+
   async close(): Promise<void> {
     this.closed = true;
+    await this.closeProcess();
+  }
+
+  private async closeProcess(): Promise<void> {
     const proc = this.proc;
     if (!proc) return;
 
@@ -152,6 +166,7 @@ class PersistentClaudeSession {
         // already exited
       }
     }
+    if (this.proc === proc) this.proc = undefined;
   }
 
   private async askWithTools(message: string): Promise<string> {
@@ -376,6 +391,9 @@ export function createClaudeBridge(
   return {
     ask(message: string): Promise<string> {
       return session.ask(message);
+    },
+    useSession(sessionId: string, label?: string): Promise<void> {
+      return session.useSession(sessionId, label);
     },
     async close(): Promise<void> {
       await session.close();
