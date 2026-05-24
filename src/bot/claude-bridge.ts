@@ -40,6 +40,10 @@ function setFlag(args: string[], flag: string, value: string): string[] {
   return [...removeFlag(args, flag, true), flag, value];
 }
 
+function hasFlag(args: string[], flag: string): boolean {
+  return args.includes(flag);
+}
+
 function ensureFlag(args: string[], flag: string): string[] {
   return args.includes(flag) ? args : [...args, flag];
 }
@@ -53,20 +57,30 @@ function defaultSessionLabel(): string {
   return `${botName}-${stamp}`;
 }
 
-function claudePrintArgs(sessionId: string): string[] {
+function claudePrintArgs(sessionId: string, firstCall: boolean): string[] {
   const model = process.env.CLAUDE_MODEL ?? "sonnet";
-  let args = ["-p", "--model", model, "--session-id", sessionId, "--output-format", "text"];
+  let args = ["-p", "--model", model, "--output-format", "text"];
+  args = firstCall ? [...args, "--session-id", sessionId] : [...args, "--continue"];
   if (process.env.CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS === "1") {
     args = ensureFlag(args, "--dangerously-skip-permissions");
   }
   return args;
 }
 
-function normalizeClaudePrintArgs(args: string[], sessionId: string): string[] {
+function normalizeClaudePrintArgs(
+  args: string[],
+  sessionId: string,
+  firstCall: boolean,
+): string[] {
   args = removeFlag(args, "-p");
   args = removeFlag(args, "--print");
   args = removeFlag(args, "--input-format", true);
-  args = setFlag(args, "--session-id", sessionId);
+  args = removeFlag(args, "--session-id", true);
+  args = removeFlag(args, "--continue");
+  if (!hasFlag(args, "--model")) {
+    args = setFlag(args, "--model", process.env.CLAUDE_MODEL ?? "sonnet");
+  }
+  args = firstCall ? setFlag(args, "--session-id", sessionId) : ensureFlag(args, "--continue");
   args = setFlag(args, "--output-format", "text");
   return ["-p", ...args];
 }
@@ -88,6 +102,7 @@ class PersistentClaudeSession {
   private closed = false;
   private sessionId: string = crypto.randomUUID();
   private label = defaultSessionLabel();
+  private isFirstCall = true;
 
   constructor(private readonly options: ClaudeBridgeOptions = {}) {}
 
@@ -104,6 +119,7 @@ class PersistentClaudeSession {
     this.closed = false;
     this.sessionId = sessionId;
     this.label = label;
+    this.isFirstCall = true;
   }
 
   async close(): Promise<void> {
@@ -135,13 +151,14 @@ class PersistentClaudeSession {
       this.options.timeoutMs ??
       (Number(process.env.CLAUDE_REPLY_TIMEOUT_MS) || 90_000);
     const command = this.options.command ?? process.env.CLAUDE_CMD ?? "claude";
+    const firstCall = this.isFirstCall;
     const args = this.options.args
-      ? normalizeClaudePrintArgs(this.options.args, this.sessionId)
-      : claudePrintArgs(this.sessionId);
+      ? normalizeClaudePrintArgs(this.options.args, this.sessionId, firstCall)
+      : claudePrintArgs(this.sessionId, firstCall);
     const cwd = this.options.cwd ?? process.env.ORACLE_REPO ?? process.cwd();
 
     console.log(
-      `[claude-bridge] claude -p request label=${this.label} session_id=${this.sessionId} cwd=${cwd}`,
+      `[claude-bridge] claude -p request mode=${firstCall ? "session-id" : "continue"} label=${this.label} session_id=${this.sessionId} cwd=${cwd}`,
     );
 
     const proc = Bun.spawn([command, ...args], {
@@ -185,6 +202,7 @@ class PersistentClaudeSession {
 
     const text = reply.trim();
     if (!text) throw new Error("[claude-bridge] empty Claude reply");
+    this.isFirstCall = false;
     return text;
   }
 }
