@@ -65,7 +65,7 @@ async function runClaudePrompt(
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
-    cwd: options.cwd ?? process.cwd(),
+    cwd: options.cwd ?? process.env.ORACLE_REPO ?? process.cwd(),
     env: process.env,
   });
 
