@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
   callDiscordTool,
   discordTools,
@@ -23,6 +26,8 @@ interface ToolCall {
   name: string;
   arguments?: Record<string, unknown>;
 }
+
+type BridgeMode = "maw-hey" | "claude-p";
 
 function removeFlag(args: string[], flag: string, takesValue = false): string[] {
   const result: string[] = [];
@@ -57,6 +62,10 @@ function defaultSessionLabel(): string {
   return `${botName}-${stamp}`;
 }
 
+function botName(): string {
+  return process.env.BOT_NAME ?? process.env.VOICE_BOT_NAME ?? "voice-bot";
+}
+
 function claudePrintArgs(sessionId: string, firstCall: boolean): string[] {
   const model = process.env.CLAUDE_MODEL ?? "sonnet";
   let args = ["-p", "--model", model, "--output-format", "text"];
@@ -65,6 +74,15 @@ function claudePrintArgs(sessionId: string, firstCall: boolean): string[] {
     args = ensureFlag(args, "--dangerously-skip-permissions");
   }
   return args;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shortMessage(message: string): string {
+  const singleLine = message.replace(/\s+/g, " ").trim();
+  return singleLine.length > 120 ? `${singleLine.slice(0, 117)}...` : singleLine;
 }
 
 function normalizeClaudePrintArgs(
@@ -103,8 +121,20 @@ class PersistentClaudeSession {
   private sessionId: string = crypto.randomUUID();
   private label = defaultSessionLabel();
   private isFirstCall = true;
+  private selectedBridge?: BridgeMode;
+  private mawWakeAttempted = false;
 
   constructor(private readonly options: ClaudeBridgeOptions = {}) {}
+
+  prepare(): void {
+    void this.resolveBridgeMode()
+      .then((mode) => {
+        if (mode === "maw-hey") return this.ensureMawSessionStarted();
+      })
+      .catch((error: any) => {
+        console.warn(`[claude-bridge] bridge prepare failed: ${error?.message ?? error}`);
+      });
+  }
 
   ask(message: string): Promise<string> {
     const run = this.queue
@@ -147,6 +177,165 @@ class PersistentClaudeSession {
   private async askOnce(prompt: string): Promise<string> {
     if (this.closed) throw new Error("[claude-bridge] session is closed");
 
+    const mode = await this.resolveBridgeMode();
+    if (mode === "maw-hey") {
+      try {
+        return await this.askViaMawHey(prompt);
+      } catch (error: any) {
+        console.warn(
+          `[claude-bridge] maw-hey failed, falling back to claude-p: ${error?.message ?? error}`,
+        );
+      }
+    }
+
+    return this.askViaClaudeP(prompt);
+  }
+
+  private async resolveBridgeMode(): Promise<BridgeMode> {
+    const configured = process.env.BRIDGE_MODE;
+    if (configured === "maw-hey" || configured === "claude-p") return configured;
+    if (!this.selectedBridge) {
+      this.selectedBridge = (await this.hasMaw()) ? "maw-hey" : "claude-p";
+      console.log(`[claude-bridge] bridge mode=${this.selectedBridge}`);
+    }
+    return this.selectedBridge;
+  }
+
+  private async hasMaw(): Promise<boolean> {
+    try {
+      const proc = Bun.spawn(["maw", "--help"], {
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      return (await proc.exited) === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  private async ensureMawSessionStarted(): Promise<void> {
+    if (this.mawWakeAttempted) return;
+    this.mawWakeAttempted = true;
+
+    const target = process.env.MAW_TARGET ?? botName();
+    try {
+      const proc = Bun.spawn(["maw", "wake", target], {
+        stdout: "ignore",
+        stderr: "pipe",
+        cwd: this.cwd(),
+        env: process.env,
+      });
+      const timeout = new Promise<"timeout">((resolve) => {
+        setTimeout(() => resolve("timeout"), 15_000);
+      });
+      const result = await Promise.race([proc.exited, timeout]);
+      if (result === "timeout") {
+        try {
+          proc.kill();
+        } catch {
+          // already exited
+        }
+        console.warn(`[claude-bridge] maw wake timed out target=${target}`);
+        return;
+      }
+      if (result !== 0) {
+        const errorText = await new Response(proc.stderr).text();
+        console.warn(
+          `[claude-bridge] maw wake failed target=${target}: ${errorText.trim() || `exit ${result}`}`,
+        );
+      }
+    } catch (error: any) {
+      console.warn(
+        `[claude-bridge] maw wake unavailable target=${target}: ${error?.message ?? error}`,
+      );
+    }
+  }
+
+  private cwd(): string {
+    return this.options.cwd ?? process.env.ORACLE_REPO ?? process.cwd();
+  }
+
+  private channelRoot(): string {
+    return join(this.cwd(), ".claude", "channels", botName());
+  }
+
+  private async askViaMawHey(prompt: string): Promise<string> {
+    await this.ensureMawSessionStarted();
+
+    const timeoutMs =
+      this.options.timeoutMs ??
+      (Number(process.env.CLAUDE_REPLY_TIMEOUT_MS) || 90_000);
+    const requestId = crypto.randomUUID();
+    const target = process.env.MAW_TARGET ?? botName();
+    const root = this.channelRoot();
+    const requestDir = join(root, "think-requests");
+    const replyDir = join(root, "think-replies");
+    const requestPath = join(requestDir, `${requestId}.json`);
+    const replyPath = join(replyDir, `${requestId}.txt`);
+
+    await mkdir(requestDir, { recursive: true });
+    await mkdir(replyDir, { recursive: true });
+    await writeFile(
+      requestPath,
+      `${JSON.stringify(
+        {
+          requestId,
+          prompt,
+          timestamp: new Date().toISOString(),
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const heyMessage =
+      `Voice trigger: ${shortMessage(prompt)}. ` +
+      `Read request at ${requestPath} and write reply to ${replyPath}`;
+    console.log(
+      `[claude-bridge] maw-hey request target=${target} request_id=${requestId}`,
+    );
+
+    const hey = Bun.spawn(["maw", "hey", target, heyMessage], {
+      stdout: "ignore",
+      stderr: "pipe",
+      cwd: this.cwd(),
+      env: process.env,
+    });
+    const [heyExit, heyError] = await Promise.all([
+      hey.exited,
+      new Response(hey.stderr).text(),
+    ]);
+    if (heyExit !== 0) {
+      await Promise.all([
+        rm(requestPath, { force: true }),
+        rm(replyPath, { force: true }),
+      ]).catch(() => undefined);
+      throw new Error(`maw hey exited ${heyExit}: ${heyError.trim() || "no stderr"}`);
+    }
+
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      if (existsSync(replyPath)) {
+        const reply = (await readFile(replyPath, "utf8")).trim();
+        if (reply) {
+          await Promise.all([
+            rm(requestPath, { force: true }),
+            rm(replyPath, { force: true }),
+          ]).catch(() => undefined);
+          return reply;
+        }
+      }
+      await sleep(500);
+    }
+
+    await Promise.all([
+      rm(requestPath, { force: true }),
+      rm(replyPath, { force: true }),
+    ]).catch(() => undefined);
+    throw new Error(`maw-hey reply timed out request_id=${requestId}`);
+  }
+
+  private async askViaClaudeP(prompt: string): Promise<string> {
     const timeoutMs =
       this.options.timeoutMs ??
       (Number(process.env.CLAUDE_REPLY_TIMEOUT_MS) || 90_000);
@@ -155,11 +344,12 @@ class PersistentClaudeSession {
     const args = this.options.args
       ? normalizeClaudePrintArgs(this.options.args, this.sessionId, firstCall)
       : claudePrintArgs(this.sessionId, firstCall);
-    const cwd = this.options.cwd ?? process.env.ORACLE_REPO ?? process.cwd();
+    const cwd = this.cwd();
 
     console.log(
       `[claude-bridge] claude -p request mode=${firstCall ? "session-id" : "continue"} label=${this.label} session_id=${this.sessionId} cwd=${cwd}`,
     );
+    console.log(`[claude-bridge] args: ${[command, ...args].join(" ")}`);
 
     const proc = Bun.spawn([command, ...args], {
       stdin: "pipe",
@@ -259,6 +449,7 @@ export function createClaudeBridge(
   options: ClaudeBridgeOptions = {},
 ): ClaudeBridge {
   const session = new PersistentClaudeSession(options);
+  session.prepare();
   return {
     ask(message: string): Promise<string> {
       return session.ask(message);
