@@ -4,7 +4,7 @@ const UNIVERSAL_TRIGGERS = [
 
 const BOT_NAME_ALIASES: Record<string, string[]> = {
   codey: ["codey", "cody", "codie", "โคดี้", "โค้ดี้", "โคดี"],
-  due: ["due", "ดูเอ"],
+  due: ["due", "ดูเอ", "ดูเอ้", "ดูเอ๋"],
   uno: ["uno", "อูโน่", "อูโน"],
 };
 

@@ -6,9 +6,13 @@
   "scripts": {
     "start": "bun src/index.ts",
     "dev": "bun --watch src/index.ts",
+    "think-responder": "bun src/bot/think-responder.ts",
     "typecheck": "tsc --noEmit",
     "postinstall": "bash scripts/fix-opus-abi.sh || true",
     "fix-opus": "bash scripts/fix-opus-abi.sh"
+  },
+  "bin": {
+    "voice-bot-think-responder": "./bin/think-responder.ts"
   },
   "dependencies": {
     "@discordjs/opus": "^0.10.0",

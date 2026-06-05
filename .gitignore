@@ -8,3 +8,6 @@ transcripts/
 .claude/
 dist/
 .DS_Store
+
+# pm2 config — มี API keys/secrets, เก็บ local เท่านั้น
+ecosystem.config.cjs

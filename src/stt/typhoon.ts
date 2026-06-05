@@ -7,7 +7,7 @@ import { basename } from "node:path";
 import type { TranscribeResult } from "./types.ts";
 
 const API_KEY = process.env.TYPHOON_API_KEY;
-const MODEL = process.env.TYPHOON_STT_MODEL || "typhoon-audio";
+const MODEL = process.env.TYPHOON_STT_MODEL || "typhoon-asr-realtime";
 const LANGUAGE = process.env.TYPHOON_STT_LANGUAGE || "th";
 const API_URL =
   process.env.TYPHOON_STT_URL ||

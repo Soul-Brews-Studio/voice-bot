@@ -318,6 +318,41 @@ voice-bot process
            Edge TTS WAV -> Discord voice playback
 ```
 
+### maw-hey Claude Bridge
+
+Default Claude calls stay on the direct `claude-p` path. To opt into file IPC
+through a maw channel, set:
+
+```bash
+BRIDGE_MODE=maw-hey
+BOT_NAME=<bot>
+MAW_TARGET=<oracle-or-pane-target>
+```
+
+Run the responder beside the bot process:
+
+```bash
+bun run think-responder
+```
+
+The sender writes requests to:
+
+```text
+.claude/channels/<bot>/think-requests/<request-id>.json
+```
+
+The responder watches that directory, calls Claude with the request
+`sessionId`, and writes replies atomically to:
+
+```text
+.claude/channels/<bot>/think-replies/<request-id>.txt
+```
+
+For each `sessionId`, the responder uses `claude -p --session-id` on the first
+request it sees and `claude -p --continue` for later requests. If a legacy
+request has no `sessionId`, it falls back to
+`VOICE_BOT_CLAUDE_SESSION_ID`/`VOICE_BOT_CLAUDE_SESSION_LABEL` when present.
+
 ## Troubleshooting
 
 ### `maw discord server` starts without slash commands

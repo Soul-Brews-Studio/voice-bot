@@ -251,6 +251,8 @@ class PersistentClaudeSession {
         {
           requestId,
           prompt,
+          sessionId: this.sessionId,
+          sessionLabel: this.label,
           timestamp: new Date().toISOString(),
         },
         null,
@@ -292,6 +294,7 @@ class PersistentClaudeSession {
             rm(requestPath, { force: true }),
             rm(replyPath, { force: true }),
           ]).catch(() => undefined);
+          this.isFirstCall = false;
           return reply;
         }
       }
